@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Istio AI Agent</title>
+    
+    <link rel="stylesheet" href="/static/github-dark.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0d1117; /* GitHub Dark Background */
+            color: #c9d1d9;
+            display: flex;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            background-color: #161b22;
+            border-left: 1px solid #30363d;
+            border-right: 1px solid #30363d;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+
+        header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #30363d;
+            background-color: #161b22;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 1.2rem;
+            color: #58a6ff;
+            font-weight: 600;
+        }
+
+        .reset-btn {
+            background-color: #21262d;
+            border: 1px solid #30363d;
+            color: #f85149;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .reset-btn:hover {
+            background-color: #b62324;
+            color: white;
+            border-color: #b62324;
+        }
+
+        #chat-box {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            scroll-behavior: smooth;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 15px;
+            border-radius: 8px;
+            line-height: 1.6;
+            word-wrap: break-word;
+            font-size: 0.95rem;
+        }
+
+        .user-message {
+            align-self: flex-end;
+            background-color: #1f6feb;
+            color: white;
+            border-bottom-right-radius: 2px;
+        }
+
+        .bot-message {
+            align-self: flex-start;
+            background-color: #21262d;
+            border: 1px solid #30363d;
+            border-bottom-left-radius: 2px;
+            width: fit-content;
+            max-width: 90%;
+        }
+
+        /* Markdown Styles */
+        .bot-message pre {
+            background-color: #0d1117 !important;
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            border: 1px solid #30363d;
+            margin: 10px 0;
+        }
+        .bot-message code {
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 0.9em;
+            background-color: rgba(110, 118, 129, 0.4);
+            padding: 0.2em 0.4em;
+            border-radius: 6px;
+        }
+        .bot-message pre code { background-color: transparent; padding: 0; }
+        
+        .bot-message table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+            font-size: 0.85rem;
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+        }
+        .bot-message th, .bot-message td {
+            border: 1px solid #30363d;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .bot-message th { background-color: #161b22; color: #58a6ff; }
+        .bot-message tr:nth-child(even) { background-color: #161b22; }
+
+        /* Sources Styles */
+        .sources-container {
+            margin-top: 15px;
+            padding-top: 12px;
+            border-top: 1px solid #30363d;
+            font-size: 0.85rem;
+            width: 100%;
+        }
+        .sources-title {
+            display: block;
+            font-weight: 600;
+            color: #8b949e;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .source-list { display: flex; flex-direction: column; gap: 6px; }
+        .source-item {
+            display: flex;
+            align-items: center;
+            background-color: #161b22;
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            text-decoration: none;
+        }
+        .source-repo {
+            background-color: #30363d;
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 8px;
+        }
+
+        .source-path {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 0.8rem;
+            color: #adbac7;
+        }
+
+        .source-item:hover .source-path {
+            white-space: normal;
+            word-break: break-all;
+        }
+
+        /* Input Area */
+        .input-area {
+            padding: 20px;
+            background-color: #161b22;
+            border-top: 1px solid #30363d;
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 12px 15px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background-color: #0d1117;
+            color: white;
+            outline: none;
+        }
+        button#send-btn {
+            padding: 12px 24px;
+            background-color: #238636;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        button#send-btn:disabled {
+            background-color: #30363d;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        /* --- ANIMATION FOR THINKING --- */
+        .loading-dots:after {
+            content: '.';
+            animation: dots 1.5s steps(5, end) infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60% { content: '...'; }
+            80%, 100% { content: ''; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>🤖 Istio Knowledge Agent</h1>
+            <button onclick="resetChat()" class="reset-btn">🗑️ Reset Context</button>
+        </header>
+
+        <div id="chat-box">
+            <div class="message bot-message">Hello! I am ready to help you with Istio.</div>
+        </div>
+
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="Type your question..." autocomplete="off">
+            <button onclick="sendMessage()" id="send-btn">Send</button>
+        </div>
+    </div>
+
+    <script src="/static/marked.min.js"></script>
+    <script src="/static/highlight.min.js"></script>
+
+    <script>
+        let sessionId = localStorage.getItem("istio_agent_session_id") || "sess_" + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem("istio_agent_session_id", sessionId);
+
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                highlight: function(code, lang) {
+                    if (typeof hljs !== 'undefined') {
+                        const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                        return hljs.highlight(code, { language }).value;
+                    }
+                    return code; 
+                },
+                langPrefix: 'hljs language-'
+            });
+        }
+
+        const chatBox = document.getElementById('chat-box');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        userInput.addEventListener("keypress", (e) => { if (e.key === "Enter") sendMessage(); });
+
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            appendMessage(text, 'user-message');
+            userInput.value = '';
+            
+            // ACTIVAR ESTADO DE CARGA
+            setLoadingState(true);
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, session_id: sessionId })
+                });
+
+                const data = await response.json();
+                const botContent = marked.parse(String(data.response));
+                appendMessage(botContent, 'bot-message', true, data.sources);
+
+            } catch (error) {
+                appendMessage("Error reaching server.", 'bot-message');
+            } finally {
+                // DESACTIVAR ESTADO DE CARGA
+                setLoadingState(false);
+                userInput.focus();
+            }
+        }
+
+        // FUNCIÓN PARA CONTROLAR EL BOTÓN DE CARGA
+        function setLoadingState(isLoading) {
+            userInput.disabled = isLoading;
+            sendBtn.disabled = isLoading;
+            if (isLoading) {
+                sendBtn.innerHTML = '<span class="loading-dots">Thinking</span>';
+            } else {
+                sendBtn.innerText = "Send";
+            }
+        }
+
+        function appendMessage(content, className, isHtml = false, sources = []) {
+            const div = document.createElement('div');
+            div.className = `message ${className}`;
+            if (isHtml) div.innerHTML = content; else div.textContent = content;
+
+            if (sources && sources.length > 0) {
+                let html = '<div class="sources-container"><span class="sources-title">📚 Sources Used</span><div class="source-list">';
+                sources.forEach(src => {
+                    const matchPercent = Math.round(src.score * 100);
+                    
+                    html += `
+                        <a href="${src.url || '#'}" target="_blank" class="source-item">
+                            <span class="source-repo">${src.repo}</span>
+                            <span class="source-path" title="${src.file}">${src.file}</span>
+                            <span style="margin-left: auto; font-size: 0.7rem; color: #8b949e;">${matchPercent}%</span>
+                        </a>`;
+                });
+                div.innerHTML += html + '</div></div>';
+            }
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        async function resetChat() {
+            if(!confirm("Reset context?")) return;
+            await fetch('/api/reset', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: sessionId})});
+            chatBox.innerHTML = '<div class="message bot-message">Context cleared!</div>';
+        }
+    </script>
+</body>
+</html>
