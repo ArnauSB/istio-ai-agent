@@ -1,0 +1,64 @@
+app:
+  cache_file: "docs/istio_issues_cache.json"
+
+github:
+  repositories:
+    - name: "istio-core"
+      url: "https://github.com/istio/istio.git"
+      local_path: "./docs/data_istio_repo"
+      branch: "release-1.28"
+    - name: "istio-docs"
+      url: "https://github.com/istio/istio.io.git"
+      local_path: "./docs/data_istio_docs"
+      branch: "release-1.28"
+    - name: "envoy-docs"
+      url: "https://github.com/envoyproxy/envoy.git"
+      local_path: "./docs/data_envoy_docs"
+      branch: "release/v1.36"
+    - name: "istio-playground-zirain"
+      url: "https://github.com/zirain/playground.git"
+      local_path: "./docs/data_zirain_playground"
+      branch: "master"
+
+  extensions: 
+    - ".md"
+    - ".go"
+    - ".yaml"
+    - ".rst"
+
+  exclude_patterns:
+    # Not important
+    - "**/vendor/**"
+    - "**/*_test.go"
+    - "**/testdata/**"
+    - "**/.git/**"
+    # Envoy exclusion
+    - "**/*.cc"
+    - "**/*.h"
+    - "**/source/**"
+    - "**/bazel/**"
+    - "**/test/**"
+    # Istio docs exclusion
+    - "**/blog/**"
+    - "**/news/**"
+    - "**/archives/**"
+    # Zirain advanced stuff
+    - "**/*.wasm"
+    - "**/*.so"
+    - "**/target/**"
+    - "**/dist/**"
+    - "**/bin/**"
+    - "**/*.prof"
+
+database:
+  chroma_path: "./chroma_db"
+  collection_name: "istio_knowledge"
+
+models:
+  embedding_model: "BAAI/bge-small-en-v1.5"
+  llm_model: "gpt-oss:20b"
+  ollama_url: "http://localhost:11434"
+
+splitter:
+  chunk_size: 1500
+  chunk_overlap: 200

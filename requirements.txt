@@ -1,0 +1,24 @@
+# --- Core Dependencies ---
+huggingface-hub>=0.23.0
+transformers>=4.39.0
+torch>=2.1.0
+
+# --- LlamaIndex Core & Plugins ---
+llama-index-core
+llama-index-readers-github
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
+llama-index-vector-stores-chroma
+
+# --- Database & Utilities ---
+chromadb
+python-dotenv
+nest_asyncio
+PyGithub
+GitPython
+
+# --- UI & API ---
+fastapi
+uvicorn
+pydantic
+uvicorn
