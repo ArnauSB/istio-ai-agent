@@ -1,23 +1,33 @@
+system:
+  # The versions AI understands (The "User Facing" versions)
+  active_versions: ["1.28", "1.27", "1.26"]
+  default_version: "1.28"
+
 app:
-  cache_file: "docs/istio_issues_cache.json"
+  cache_file: "data_versions/istio_issues_cache.json"
 
 github:
   repositories:
     - name: "istio-core"
       url: "https://github.com/istio/istio.git"
-      local_path: "./docs/data_istio_repo"
-      branch: "release-1.28"
+      version_maps:
+        "1.28": "release-1.28"
+        "1.27": "release-1.27"
+        "1.26": "release-1.26"
     - name: "istio-docs"
       url: "https://github.com/istio/istio.io.git"
-      local_path: "./docs/data_istio_docs"
-      branch: "release-1.28"
+      version_maps:
+        "1.28": "release-1.28"
+        "1.27": "release-1.27"
+        "1.26": "release-1.26"
     - name: "envoy-docs"
       url: "https://github.com/envoyproxy/envoy.git"
-      local_path: "./docs/data_envoy_docs"
-      branch: "release/v1.36"
+      version_maps:
+        "1.28": "release/v1.36" 
+        "1.27": "release/v1.35"
+        "1.26": "release/v1.34"
     - name: "istio-playground-zirain"
       url: "https://github.com/zirain/playground.git"
-      local_path: "./docs/data_zirain_playground"
       branch: "master"
 
   extensions: 

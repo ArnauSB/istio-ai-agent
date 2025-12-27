@@ -3,11 +3,9 @@ __pycache__/
 venv/
 .env
 data_*/
-docs/
 chroma_db/
 istio_issues_cache.json
 *.json
 *.log
 .vscode/
 .idea/
-
