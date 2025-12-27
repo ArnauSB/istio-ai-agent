@@ -84,14 +84,15 @@ def fetch_github_issues(token, repo_name, days_back=365, limit=1000):
                         "created_at": str(issue.created_at),
                         "repo_name": repo_name,
                         "type": "github_issue",
-                        "state": issue.state 
+                        "state": issue.state,
+                        "system_version": "any"
                     }
                 })
 
                 count += 1
                 
                 if count % 10 == 0:
-                    sys.stdout.write(f"\r   Processed {count}/{limit} issues (with comments)...")
+                    sys.stdout.write(f"\rProcessed {count}/{limit} issues (with comments)...")
                     sys.stdout.flush()
 
             except RateLimitExceededException:
@@ -122,7 +123,7 @@ def run_ingestion():
 
     print(f"Targeting repository: {target_repo_slug}")
 
-    cache_file = "docs/cache_issues.json" 
+    cache_file = "data_versions/istio_issues_cache.json" 
     
     if os.path.exists(cache_file):
         print(f"Loading from local cache ({cache_file})...")
@@ -139,7 +140,7 @@ def run_ingestion():
             config.GITHUB_TOKEN, 
             target_repo_slug, 
             days_back=365,
-            limit=1000 # Limitted by GH API
+            limit=1000 
         )
         
         if len(raw_data) > 0:
