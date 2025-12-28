@@ -2,6 +2,7 @@
 huggingface-hub>=0.23.0
 transformers>=4.39.0
 torch>=2.1.0
+rank_bm25
 
 # --- LlamaIndex Core & Plugins ---
 llama-index-core
@@ -9,6 +10,7 @@ llama-index-readers-github
 llama-index-llms-ollama
 llama-index-embeddings-huggingface
 llama-index-vector-stores-chroma
+llama-index-retrievers-bm25
 
 # --- Database & Utilities ---
 chromadb

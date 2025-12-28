@@ -20,6 +20,7 @@ COLLECTION_NAME = cfg["database"]["collection_name"]
 CACHE_FILE = cfg["app"]["cache_file"]
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", cfg["models"]["ollama_url"])
 MODEL_NAME = cfg["models"]["llm_model"]
+STORAGE_NODES_PATH = cfg['database'].get('storage_nodes_path', './storage_nodes')
 
 def get_embedding_model():
     model_name = cfg["models"]["embedding_model"]
