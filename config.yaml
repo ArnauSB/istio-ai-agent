@@ -63,6 +63,7 @@ github:
 database:
   chroma_path: "./chroma_db"
   collection_name: "istio_knowledge"
+  storage_nodes_path: "./storage_nodes"
 
 models:
   embedding_model: "BAAI/bge-small-en-v1.5"
