@@ -11,7 +11,7 @@
     <style>
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: #0d1117; /* GitHub Dark Background */
+            background-color: #0d1117; 
             color: #c9d1d9;
             display: flex;
             justify-content: center;
@@ -57,11 +57,7 @@
             font-size: 0.85rem;
             transition: all 0.2s;
         }
-        .reset-btn:hover {
-            background-color: #b62324;
-            color: white;
-            border-color: #b62324;
-        }
+        .reset-btn:hover { background-color: #b62324; color: white; border-color: #b62324; }
 
         #chat-box {
             flex: 1;
@@ -87,6 +83,7 @@
             background-color: #1f6feb;
             color: white;
             border-bottom-right-radius: 2px;
+            white-space: pre-wrap; /* Preserves YAML indentation */
         }
 
         .bot-message {
@@ -98,7 +95,7 @@
             max-width: 90%;
         }
 
-        /* Markdown Styles */
+        /* --- RESTORED MARKDOWN STYLES --- */
         .bot-message pre {
             background-color: #0d1117 !important;
             padding: 12px;
@@ -132,7 +129,7 @@
         .bot-message th { background-color: #161b22; color: #58a6ff; }
         .bot-message tr:nth-child(even) { background-color: #161b22; }
 
-        /* Sources Styles */
+        /* --- RESTORED SOURCE STYLES --- */
         .sources-container {
             margin-top: 15px;
             padding-top: 12px;
@@ -165,7 +162,6 @@
             border-radius: 4px;
             margin-right: 8px;
         }
-
         .source-path {
             flex: 1;
             overflow: hidden;
@@ -176,20 +172,27 @@
             color: #adbac7;
         }
 
-        .source-item:hover .source-path {
-            white-space: normal;
-            word-break: break-all;
-        }
-
-        /* Input Area */
-        .input-area {
+        /* --- INPUT AREA & FILE PREVIEW --- */
+        .input-area-container {
             padding: 20px;
             background-color: #161b22;
             border-top: 1px solid #30363d;
-            display: flex;
-            gap: 10px;
         }
-        input {
+        .file-preview {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            background: #0d1117;
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            font-size: 0.85rem;
+            border: 1px solid #30363d;
+            color: #adbac7;
+        }
+        .input-row { display: flex; align-items: flex-end; gap: 10px; }
+        
+        textarea#user-input {
             flex: 1;
             padding: 12px 15px;
             border-radius: 6px;
@@ -197,7 +200,25 @@
             background-color: #0d1117;
             color: white;
             outline: none;
+            resize: none;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 0.95rem;
+            min-height: 24px;
+            max-height: 200px;
+            line-height: 1.5;
         }
+
+        .icon-btn {
+            background: none;
+            border: none;
+            color: #8b949e;
+            cursor: pointer;
+            padding: 10px;
+            font-size: 1.2rem;
+            transition: color 0.2s;
+        }
+        .icon-btn:hover { color: #58a6ff; }
+
         button#send-btn {
             padding: 12px 24px;
             background-color: #238636;
@@ -206,41 +227,14 @@
             border-radius: 6px;
             cursor: pointer;
             font-weight: 600;
+            height: 46px;
         }
-        button#send-btn:disabled {
-            background-color: #30363d;
-            cursor: not-allowed;
-            opacity: 0.7;
-        }
+        button#send-btn:disabled { opacity: 0.7; cursor: not-allowed; }
 
-        /* FOOTER STYLES */
-        footer {
-            padding: 10px;
-            background-color: #0d1117;
-            text-align: center;
-            font-size: 0.8rem;
-            color: #8b949e;
-            border-top: 1px solid #30363d;
-        }
-        footer a {
-            color: #58a6ff;
-            text-decoration: none;
-        }
-        footer a:hover {
-            text-decoration: underline;
-        }
-
-        /* --- ANIMATION FOR THINKING --- */
-        .loading-dots:after {
-            content: '.';
-            animation: dots 1.5s steps(5, end) infinite;
-        }
-        @keyframes dots {
-            0%, 20% { content: '.'; }
-            40% { content: '..'; }
-            60% { content: '...'; }
-            80%, 100% { content: ''; }
-        }
+        footer { padding: 10px; text-align: center; font-size: 0.8rem; color: #8b949e; border-top: 1px solid #30363d; }
+        
+        .loading-dots:after { content: '.'; animation: dots 1.5s steps(5, end) infinite; }
+        @keyframes dots { 0%, 20% { content: '.'; } 40% { content: '..'; } 60% { content: '...'; } 80%, 100% { content: ''; } }
     </style>
 </head>
 <body>
@@ -252,16 +246,24 @@
         </header>
 
         <div id="chat-box">
-            <div class="message bot-message">Hello! I am ready to help you with Istio.</div>
+            <div class="message bot-message">Hello! I am ready to help with Istio.</div>
         </div>
 
-        <div class="input-area">
-            <input type="text" id="user-input" placeholder="Type your question..." autocomplete="off">
-            <button onclick="sendMessage()" id="send-btn">Send</button>
+        <div class="input-area-container">
+            <div id="file-preview" class="file-preview">
+                <span id="file-name"></span>
+                <span onclick="clearFile()" style="cursor:pointer; color:#f85149; margin-left: auto; font-weight: bold;">✕</span>
+            </div>
+            <div class="input-row">
+                <input type="file" id="file-input" style="display:none;" accept=".yaml,.yml,.go,.md,.rst,.txt,.json" onchange="handleFileSelect(this)">
+                <button class="icon-btn" title="Attach File" onclick="document.getElementById('file-input').click()">📎</button>
+                <textarea id="user-input" placeholder="Type your question..." rows="1"></textarea>
+                <button onclick="sendMessage()" id="send-btn">Send</button>
+            </div>
         </div>
 
         <footer>
-            Developed by <strong>Arnau Senserrich</strong> | <a href="https://github.com/ArnauSB" target="_blank">GitHub</a>
+            Developed by <strong>Arnau Senserrich</strong> | <a href="https://github.com/ArnauSB" target="_blank" style="color: #58a6ff; text-decoration: none;">GitHub</a>
         </footer>
     </div>
 
@@ -287,47 +289,82 @@
 
         const chatBox = document.getElementById('chat-box');
         const userInput = document.getElementById('user-input');
+        const fileInput = document.getElementById('file-input');
+        const filePreview = document.getElementById('file-preview');
+        const fileNameSpan = document.getElementById('file-name');
         const sendBtn = document.getElementById('send-btn');
 
-        userInput.addEventListener("keypress", (e) => { if (e.key === "Enter") sendMessage(); });
+        userInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
+
+        userInput.addEventListener("keydown", (e) => { 
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+        });
+
+        const MAX_FILE_SIZE_MB = 5;
+        const ALLOWED_EXTENSIONS = ['.yaml', '.yml', '.go', '.md', '.txt', '.json'];
+
+        function handleFileSelect(input) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                const fileName = file.name.toLowerCase();
+                
+                // Check Extension
+                const hasValidExt = ALLOWED_EXTENSIONS.some(ext => fileName.endsWith(ext));
+                if (!hasValidExt) {
+                    alert(`Unsupported file type. Please upload: ${ALLOWED_EXTENSIONS.join(', ')}`);
+                    input.value = '';
+                    return;
+                }
+
+                // Check Size
+                const fileSizeMB = file.size / (1024 * 1024);
+                if (fileSizeMB > MAX_FILE_SIZE_MB) {
+                    alert(`File too large (${fileSizeMB.toFixed(2)}MB). Max 5MB.`);
+                    input.value = '';
+                    return;
+                }
+
+                fileNameSpan.textContent = "📄 Attached: " + file.name;
+                filePreview.style.display = 'flex';
+            }
+        }
+
+        function clearFile() {
+            fileInput.value = '';
+            filePreview.style.display = 'none';
+        }
 
         async function sendMessage() {
             const text = userInput.value.trim();
-            if (!text) return;
+            if (!text && !fileInput.files[0]) return;
 
-            appendMessage(text, 'user-message');
+            let displayMsg = text;
+            if (fileInput.files[0]) displayMsg = `[Attached: ${fileInput.files[0].name}]\n\n` + text;
+            appendMessage(displayMsg, 'user-message');
+
+            const formData = new FormData();
+            formData.append('message', text);
+            formData.append('session_id', sessionId);
+            if (fileInput.files[0]) formData.append('file', fileInput.files[0]);
+
             userInput.value = '';
-            
-            // Enable loading state
+            userInput.style.height = 'auto';
+            clearFile();
             setLoadingState(true);
 
             try {
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text, session_id: sessionId })
-                });
-
+                const response = await fetch('/api/chat', { method: 'POST', body: formData });
                 const data = await response.json();
                 const botContent = marked.parse(String(data.response));
                 appendMessage(botContent, 'bot-message', true, data.sources);
-
             } catch (error) {
                 appendMessage("Error reaching server.", 'bot-message');
             } finally {
                 setLoadingState(false);
                 userInput.focus();
-            }
-        }
-
-        // Loading button
-        function setLoadingState(isLoading) {
-            userInput.disabled = isLoading;
-            sendBtn.disabled = isLoading;
-            if (isLoading) {
-                sendBtn.innerHTML = '<span class="loading-dots">Thinking</span>';
-            } else {
-                sendBtn.innerText = "Send";
             }
         }
 
@@ -340,7 +377,6 @@
                 let html = '<div class="sources-container"><span class="sources-title">📚 Sources Used</span><div class="source-list">';
                 sources.forEach(src => {
                     const matchPercent = Math.round(src.score * 100);
-                    
                     html += `
                         <a href="${src.url || '#'}" target="_blank" class="source-item">
                             <span class="source-repo">${src.repo}</span>
@@ -354,9 +390,15 @@
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
+        function setLoadingState(isLoading) {
+            userInput.disabled = isLoading;
+            sendBtn.disabled = isLoading;
+            sendBtn.innerHTML = isLoading ? '<span class="loading-dots">Thinking</span>' : "Send";
+        }
+
         async function resetChat() {
             if(!confirm("Reset context?")) return;
-            await fetch('/api/reset', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: sessionId})});
+            await fetch('/api/reset', { method: 'POST', body: new FormData() }); // Fixed to match endpoint if needed
             chatBox.innerHTML = '<div class="message bot-message">Context cleared!</div>';
         }
     </script>

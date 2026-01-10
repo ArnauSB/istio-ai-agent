@@ -24,7 +24,7 @@ STORAGE_NODES_PATH = cfg['database'].get('storage_nodes_path', './storage_nodes'
 
 def get_embedding_model():
     model_name = cfg["models"]["embedding_model"]
-    print(f"🔄 Cargando modelo de embeddings: {model_name}")
+    print(f"Loading embeddings: {model_name}")
     return HuggingFaceEmbedding(model_name=model_name)
 
 # Settings.embed_model = get_embedding_model()

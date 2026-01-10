@@ -23,4 +23,4 @@ GitPython
 fastapi
 uvicorn
 pydantic
-uvicorn
+python-multipart

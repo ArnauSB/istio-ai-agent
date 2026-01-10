@@ -6,7 +6,7 @@ import uvicorn
 
 from typing import List, Optional, Dict
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -226,9 +226,46 @@ def detect_version_intent(user_message: str):
         
     return default_ver, None
 
+MAX_FILE_SIZE = 5 * 1024 * 1024
+ALLOWED_EXTENSIONS = {'.yaml', '.yml', '.go', '.md', '.txt', '.json'}
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
-    target_version, warning_msg = detect_version_intent(request.message)
+async def chat_endpoint(
+    message: str = Form(...),
+    session_id: str = Form(...),
+    file: Optional[UploadFile] = File(None)
+):
+    if file:
+        # Size Validation
+        file.file.seek(0, os.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0) 
+        if file_size > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="File too large.")
+
+        # Extension Validation
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported file type ({ext}). Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+        
+    target_version, warning_msg = detect_version_intent(message)
+    
+    # Process attached file if present
+    file_context = ""
+    if file:
+        try:
+            content = await file.read()
+            # Decode content (assuming text-based files like YAML/Go/MD)
+            file_text = content.decode("utf-8")
+            file_context = f"\n\n[Attached File: {file.filename}]\n---\n{file_text}\n---\n"
+        except Exception as e:
+            logger.error(f"Error reading uploaded file: {e}")
+            warning_msg = f" (Warning: Could not read file {file.filename})"
+
+    full_query = f"{file_context}{message}"
     
     filters = MetadataFilters(
         filters=[
@@ -238,11 +275,11 @@ async def chat_endpoint(request: ChatRequest):
         condition=FilterCondition.OR 
     )
     
-    # Get the engine configured for this user + this version
-    user_engine = get_chat_engine(request.session_id, filters, target_version)
+    user_engine = get_chat_engine(session_id, filters, target_version)
     
     try:
-        response = await user_engine.achat(request.message)
+        # Pass the combined context to the engine
+        response = await user_engine.achat(full_query)
         
         source_list = []
         seen_paths = set()
