@@ -4,12 +4,13 @@ import logging
 import re
 import uvicorn
 import math
+import json
 
 from typing import List, Optional, Dict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 import nest_asyncio
 import chromadb
@@ -187,12 +188,13 @@ def detect_version_intent(user_message: str):
 MAX_FILE_SIZE = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'.yaml', '.yml', '.go', '.md', '.txt', '.json'}
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat")
 async def chat_endpoint(
     message: str = Form(...),
     session_id: str = Form(...),
     file: Optional[UploadFile] = File(None)
 ):
+    # 1. Validation Logic
     if file:
         # Size Validation
         file.file.seek(0, os.SEEK_END)
@@ -235,60 +237,75 @@ async def chat_endpoint(
     
     user_engine = get_chat_engine(session_id, filters, target_version)
     
+    # 2. Streaming Logic
     try:
-        # Pass the combined context to the engine
-        response = await user_engine.achat(full_query)
-        
-        source_list = []
-        seen_paths = set()
+        # Stream response
+        response_stream = await user_engine.astream_chat(full_query)
 
-        for node in response.source_nodes:
-            if len(source_list) >= 5: 
-                break
+        async def event_generator():
+            # A. Send Warning Message first
+            if warning_msg:
+                yield f"{warning_msg}\n\n"
+
+            # B. Yield tokens one by one as LLM generates them
+            async for token in response_stream.async_response_gen():
+                yield token
+
+            # C. Process Sources
+            source_list = []
+            seen_paths = set()
             
-            repo = node.metadata.get('repo_name', 'istio')
-            url = node.metadata.get('source', '')
-            title = node.metadata.get('title')
-            file_path = node.metadata.get('file_path', 'N/A')
+            # response_stream.source_nodes contains the retrieved nodes
+            for node in response_stream.source_nodes:
+                if len(source_list) >= 5: break
+                
+                repo = node.metadata.get('repo_name', 'istio')
+                url = node.metadata.get('source', '')
+                title = node.metadata.get('title')
+                path = node.metadata.get('file_path', 'N/A')
 
-            # Calculate the sigmoid score
-            raw_score = float(node.score or 0)
-            sigmoid_score = 1 / (1 + math.exp(-raw_score))
+                # Calculate the sigmoid score
+                raw_score = float(node.score or 0)
+                sigmoid_score = 1 / (1 + math.exp(-raw_score))
+                
+                # Clean up the path for display (removes data_versions/x.xx/ prefix)
+                clean_path = re.sub(r'.*data_[^/]+/', '', path)
+
+                # Determine unique ID to prevent duplicate sources
+                unique_id = url if node.metadata.get('type') == 'github_issue' else path
+
+                # Determine what to show in the UI
+                display = f"Issue: {title}" if node.metadata.get('type') == 'github_issue' else clean_path
+
+                if unique_id not in seen_paths:
+                    source_list.append({
+                        "repo": repo,
+                        "file": display,
+                        "url": url,
+                        "score": sigmoid_score
+                    })
+                    seen_paths.add(unique_id)
             
-            # Clean up the path for display (removes data_versions/x.xx/ prefix)
-            clean_path = re.sub(r'.*data_[^/]+/', '', file_path)
-            
-            # Determine unique ID to prevent duplicate sources
-            unique_id = url if node.metadata.get('type') == 'github_issue' else file_path
-            
-            # Determine what to show in the UI
-            display = f"Issue: {title}" if node.metadata.get('type') == 'github_issue' else clean_path
+            # D. Send Sources as a special footer packet
+            # We use a delimiter "__SOURCES__:" to let frontend know this isn't text
+            yield f"\n\n__SOURCES__:{json.dumps(source_list)}"
 
-            if unique_id not in seen_paths:
-                source_list.append(Source(
-                    repo=repo,
-                    file=display,
-                    url=url if url else None,
-                    score=sigmoid_score
-                ))
-                seen_paths.add(unique_id)
-
-        final_text = str(response.response)
-        if warning_msg:
-            final_text = f"{warning_msg}\n\n{final_text}"
-
-        return ChatResponse(response=final_text, sources=source_list)
+        return StreamingResponse(event_generator(), media_type="text/plain")
         
     except Exception as e:
         logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/reset")
-async def reset_chat(request: ChatRequest): 
-    if request.session_id in session_store:
-        del session_store[request.session_id]
+async def reset_chat(session_id: str = Form(...)): 
+    if session_id in session_store:
+        del session_store[session_id]
         return {"status": "memory_cleared"}
     return {"status": "no_session_found"}
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.png")
 
 @app.get("/health")
 async def health_check():
