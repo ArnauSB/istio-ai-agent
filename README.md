@@ -1,28 +1,41 @@
-# 🤖 Istio AI Agent (Experimental v0.1)
+# 🤖 Istio AI Agent (Experimental v0.2)
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-yellow.svg)
-![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)
+![Status](https://img.shields.io/badge/Status-Beta-green.svg)
 
-An AI-powered assistant specifically designed for **Istio Service Mesh**. 
+An Advanced AI Assistant specifically designed for **Istio Service Mesh**. 
 
-Unlike generic LLMs, this agent uses **RAG (Retrieval-Augmented Generation)** to ingest the latest Istio source code, documentation, and GitHub Issues locally. It provides answers with **direct citations** to the files it used.
+Unlike generic chatbots, this agent uses **Advanced RAG (Retrieval-Augmented Generation)** with a **Hybrid Search** strategy. It ingests Istio source code, documentation, and GitHub Issues locally, uses a Cross-Encoder to verify relevance, and streams answers in real-time.
 
-> **⚠️ Disclaimer:** This is a v0.1 Proof of Concept. Do not use in critical production environments without verification.
+> **⚠️ Disclaimer:** This is a Proof of Concept. Do not use in critical production environments without verification.
 
-## ✨ Features
+## ✨ Key Features
 
-- **🧠 Domain Specific:** Trained on `istio/istio`, `istio/api`, and `envoyproxy/envoy`.
-- **🔍 Source Citations:** Tells you exactly which file or GitHub Issue was used to generate the answer.
-- **🛡️ Data Privacy:** Runs 100% locally using **Ollama** and local vector embeddings. No data leaves your machine.
-- **💾 Session Memory:** Remembers context per user session (isolated memory).
+- **🧠 Advanced Retrieval:** Uses **Hybrid Search** (Vector Semantic Search + BM25 Keyword Search) to find both high-level concepts and specific error codes.
+- **🎯 AI Reranking:** A dedicated **Cross-Encoder Model** evaluates retrieved documents to filter out hallucinations and irrelevant matches.
+- **⚡ Real-Time Streaming:** Answers are streamed token-by-token for an instant, responsive experience.
+- **📎 Context Aware:** Supports **File Uploads** (YAML, Go, Logs). Drag & drop a `virtualservice.yaml` or a log file, and the AI will analyze it.
+- **🔍 Precision Citations:** Displays the exact source file and a **Relevance Score (0-100%)** for every piece of information used.
+- **🛡️ 100% Local Privacy:** Runs locally using **Ollama** and local vector embeddings. No data leaves your machine.
 
 ## 🛠️ Architecture
-- **LLM:** Ollama (default: `gpt-oss`)
+
+The pipeline implements a "Retrieve & Rerank" strategy:
+
+1.  **Ingestion:** Code & Docs are split and embedded into **ChromaDB**.
+2.  **Retrieval:** * **Vector Search:** Finds semantic meaning (e.g., "traffic splitting").
+    * **BM25:** Finds exact keyword matches (e.g., "Error 503-UC").
+3.  **Reranking:** The `cross-encoder/ms-marco-MiniLM-L-6-v2` model reads the top 30 candidates and selects the **Top 10** most relevant chunks.
+4.  **Generation:** **Ollama** (Llama3/GPT-OSS) generates the answer using the curated context.
+
+**Tech Stack:**
+- **LLM:** Ollama (default: `gpt-oss:20b`)
 - **Orchestration:** LlamaIndex
-- **Vector Database:** ChromaDB (Local persistent storage)
-- **Backend:** FastAPI (Python)
-- **Frontend:** HTML5/JS (No frameworks required)
+- **Reranker:** SentenceTransformers (`ms-marco-MiniLM-L-6-v2`)
+- **Vector DB:** ChromaDB
+- **Backend:** FastAPI (Async Streaming)
+- **Frontend:** HTML5/JS (No frameworks, pure WebSocket-like streaming)
 
 ## 🚀 Getting Started
 
@@ -41,7 +54,7 @@ ollama pull gpt-oss:20b
 
 1. Clone the repository:
 ```bash
-git clone [https://github.com/ArnauSB/istio-ai-agent.git](https://github.com/ArnauSB/istio-ai-agent.git)
+git clone https://github.com/ArnauSB/istio-ai-agent.git
 cd istio-ai-agent
 ```
 

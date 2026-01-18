@@ -3,26 +3,30 @@ import sys
 import logging
 import re
 import uvicorn
+import math
+import json
 
 from typing import List, Optional, Dict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 import nest_asyncio
 import chromadb
+
+# --- CORE IMPORTS ---
 from llama_index.core import VectorStoreIndex, Settings, StorageContext
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.ollama import Ollama
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter, FilterCondition
-
-# --- IMPORTS FOR HYBRID SEARCH & CHAT ENGINE ---
-from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.core.retrievers import BaseRetriever
-from llama_index.core.schema import NodeWithScore, QueryBundle
 from llama_index.core.chat_engine import ContextChatEngine
+
+# --- RETRIEVAL & RERANKING IMPORTS ---
+from llama_index.retrievers.bm25 import BM25Retriever 
+from llama_index.core.retrievers import QueryFusionRetriever
+from llama_index.core.postprocessor import SentenceTransformerRerank
 
 import config
 import prompts
@@ -36,8 +40,14 @@ logger = logging.getLogger(__name__)
 # --- GLOBAL STATE ---
 vector_index = None 
 bm25_retriever = None
-# This dictionary stores the MEMORY for each user, ensuring context is kept
 session_store: Dict[str, ChatMemoryBuffer] = {}
+
+# --- RERANKER ---
+# This decides which document is best, whether it came from Vector or BM25
+reranker = SentenceTransformerRerank(
+    model="cross-encoder/ms-marco-MiniLM-L-6-v2", 
+    top_n=10
+)
 
 class ChatRequest(BaseModel):
     message: str
@@ -53,55 +63,14 @@ class ChatResponse(BaseModel):
     response: str
     sources: List[Source] = []
 
-# --- CUSTOM HYBRID RETRIEVER ---
-class CustomHybridRetriever(BaseRetriever):
-    def __init__(self, vector_retriever, bm25_retriever, target_version):
-        self.vector_retriever = vector_retriever
-        self.bm25_retriever = bm25_retriever
-        self.target_version = target_version
-        super().__init__()
-
-    def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
-        # Get Vector Results (Filtered by Chroma logic)
-        vector_nodes = self.vector_retriever.retrieve(query_bundle)
-        
-        # Get BM25 Results (Unfiltered)
-        bm25_nodes = self.bm25_retriever.retrieve(query_bundle)
-        
-        # Filter BM25 Results manually
-        filtered_bm25_nodes = []
-        for node in bm25_nodes:
-            ver = node.node.metadata.get("system_version", "unknown")
-            if ver == self.target_version or ver == "any":
-                filtered_bm25_nodes.append(node)
-        
-        # Combine Results (RRF Algorithm)
-        combined_dict = {}
-        
-        # Process Vector (Baseline)
-        for rank, node in enumerate(vector_nodes):
-            node.score = node.score or 0.0
-            combined_dict[node.node.node_id] = node
-            
-        # Process BM25 (Boost)
-        for rank, node in enumerate(filtered_bm25_nodes):
-            if node.node.node_id in combined_dict:
-                combined_dict[node.node.node_id].score += 0.2
-            else:
-                node.score = 0.5 - (rank * 0.01) 
-                combined_dict[node.node.node_id] = node
-                
-        final_nodes = list(combined_dict.values())
-        final_nodes.sort(key=lambda x: x.score, reverse=True)
-        return final_nodes[:5]
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global vector_index, bm25_retriever
     logger.info("--- Starting API Server ---")
     
     try:
-        Settings.embed_model = config.get_embedding_model()
+        embed_model = config.get_embedding_model() 
+        Settings.embed_model = embed_model
         Settings.llm = Ollama(
             model=config.MODEL_NAME, 
             base_url=config.OLLAMA_URL, 
@@ -114,23 +83,18 @@ async def lifespan(app: FastAPI):
         chroma_collection = db.get_collection(config.COLLECTION_NAME)
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
         
-        # --- LOAD LOCAL DOCSTORE FOR BM25 (Decoupled from Chroma) ---
+        # --- LOAD BM25 INDEX ---
         if os.path.exists(config.STORAGE_NODES_PATH):
-            logger.info(f"Loading nodes for BM25 index from {config.STORAGE_NODES_PATH}...")
-            
-            # Use separate storage context for local files to force disk read
+            logger.info(f"Loading nodes for BM25 from {config.STORAGE_NODES_PATH}...")
             local_storage = StorageContext.from_defaults(
                 persist_dir=config.STORAGE_NODES_PATH
             )
-            
             all_nodes = list(local_storage.docstore.docs.values())
-            logger.info(f"Loaded {len(all_nodes)} nodes for BM25.")
-
+            
             if len(all_nodes) > 0:
-                logger.info("Building BM25 Keyword Index (RAM)...")
                 bm25_retriever = BM25Retriever.from_defaults(
                     nodes=all_nodes, 
-                    similarity_top_k=5
+                    similarity_top_k=10 # Fetch 10 via Keywords
                 )
             else:
                 logger.warning("Docstore loaded but returned 0 nodes. Check ingest_code.py.")
@@ -139,16 +103,16 @@ async def lifespan(app: FastAPI):
             logger.warning(f"{config.STORAGE_NODES_PATH} not found. Hybrid search disabled.")
             bm25_retriever = None
 
-        # Initialize Vector Index (From Chroma)
+        # Initialize Vector Index
         vector_index = VectorStoreIndex.from_vector_store(
             vector_store,
-            embed_model=config.get_embedding_model()
+            embed_model=embed_model
         )
         
-        logger.info(f"System Ready! Hybrid Search: {'Active' if bm25_retriever else 'Inactive'}")
+        logger.info(f"System Ready! Hybrid Mode: {'Active' if bm25_retriever else 'Vector Only'}")
         
     except Exception as e:
-        logger.error(f"Fatal error during startup: {e}")
+        logger.error(f"Fatal error: {e}")
         sys.exit(1)
         
     yield
@@ -162,14 +126,13 @@ if os.path.exists("static"):
 async def read_root():
     if os.path.exists("static/index.html"):
         return FileResponse('static/index.html')
-    return {"message": "Istio Agent API Running (Index not found)"}
+    return {"message": "Istio Agent API Running"}
 
-# --- CHAT ENGINE FACTORY (Where Context + Search meet) ---
+# --- CHAT ENGINE FACTORY (Hybrid + Reranker) ---
 def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
     if not vector_index:
         raise HTTPException(status_code=503, detail="System not ready")
 
-    # RETRIEVE PERSISTENT MEMORY
     if session_id not in session_store:
         logger.info(f"Creating new memory for session: {session_id}")
         session_store[session_id] = ChatMemoryBuffer.from_defaults(token_limit=8000)
@@ -177,26 +140,28 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
     # We grab the memory object that holds the history for this user
     user_memory = session_store[session_id]
 
-    # CREATE RETRIEVER (Dynamic per request)
+    # 1. Setup Vector Retriever
     vector_retriever = vector_index.as_retriever(
-        similarity_top_k=6,
+        similarity_top_k=20,
         filters=filters
     )
 
+    # 2. Setup Hybrid Retriever (Fusion)
     if bm25_retriever:
-        final_retriever = CustomHybridRetriever(
-            vector_retriever=vector_retriever,
-            bm25_retriever=bm25_retriever,
-            target_version=target_version
+        # QueryFusionRetriever combines results from both retrievers
+        final_retriever = QueryFusionRetriever(
+            retrievers=[vector_retriever, bm25_retriever],
+            similarity_top_k=30, # Total candidates to send to Reranker
+            num_queries=1,       # Only use the original query (no query generation)
+            mode="simple"        # Simple merge, let Reranker sort it out
         )
     else:
         final_retriever = vector_retriever
 
-    # CREATE ENGINE WITH PERSISTENT MEMORY
-    # We inject the 'user_memory' here. This ensures the engine sees past chats
-    # even though the engine itself is newly created.
+    # 3. Create Engine with Reranker
     return ContextChatEngine.from_defaults(
         retriever=final_retriever,
+        node_postprocessors=[reranker], # <--- Reranker selects the best 5 from the 15 candidates
         llm=Settings.llm,
         memory=user_memory, 
         system_prompt=prompts.ISTIO_SYSTEM_PROMPT
@@ -205,7 +170,6 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
 def detect_version_intent(user_message: str):
     active_versions = config.cfg['system']['active_versions']
     default_ver = config.cfg['system']['default_version']
-    
     try:
         sorted_vers = sorted(active_versions, key=lambda x: int(x.split('.')[1]), reverse=True)
         oldest_supported = sorted_vers[-1]
@@ -215,26 +179,22 @@ def detect_version_intent(user_message: str):
     match = re.search(r'\b1\.(\d+)\b', user_message)
     if match:
         asked_minor = int(match.group(1))
-        
-        oldest_minor = int(oldest_supported.split('.')[1])
-        if asked_minor < oldest_minor:
-             return oldest_supported, f"Note: You asked for 1.{asked_minor}, answering with {oldest_supported}."
-
+        if asked_minor < int(oldest_supported.split('.')[1]):
+             return oldest_supported, f"Note: Asked 1.{asked_minor}, answering with {oldest_supported}."
         req = f"1.{asked_minor}"
-        if req in active_versions: return req, None
-        return default_ver, f"Note: Using default {default_ver}."
-        
+        return (req, None) if req in active_versions else (default_ver, f"Note: Using default {default_ver}.")
     return default_ver, None
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'.yaml', '.yml', '.go', '.md', '.txt', '.json'}
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat")
 async def chat_endpoint(
     message: str = Form(...),
     session_id: str = Form(...),
     file: Optional[UploadFile] = File(None)
 ):
+    # 1. Validation Logic
     if file:
         # Size Validation
         file.file.seek(0, os.SEEK_END)
@@ -277,52 +237,79 @@ async def chat_endpoint(
     
     user_engine = get_chat_engine(session_id, filters, target_version)
     
+    # 2. Streaming Logic
     try:
-        # Pass the combined context to the engine
-        response = await user_engine.achat(full_query)
-        
-        source_list = []
-        seen_paths = set()
+        # Stream response
+        response_stream = await user_engine.astream_chat(full_query)
 
-        for node in response.source_nodes:
-            repo = node.metadata.get('repo_name', 'istio')
-            url = node.metadata.get('source', '')
-            title = node.metadata.get('title')
-            file_path = node.metadata.get('file_path', 'N/A')
-            clean_path = re.sub(r'.*data_[^/]+/', '', file_path)
+        async def event_generator():
+            # A. Send Warning Message first
+            if warning_msg:
+                yield f"{warning_msg}\n\n"
+
+            # B. Yield tokens one by one as LLM generates them
+            async for token in response_stream.async_response_gen():
+                yield token
+
+            # C. Process Sources
+            source_list = []
+            seen_paths = set()
             
-            unique_id = url if node.metadata.get('type') == 'github_issue' else file_path
-            display = f"Issue: {title}" if node.metadata.get('type') == 'github_issue' else clean_path
+            # response_stream.source_nodes contains the retrieved nodes
+            for node in response_stream.source_nodes:
+                if len(source_list) >= 5: break
+                
+                repo = node.metadata.get('repo_name', 'istio')
+                url = node.metadata.get('source', '')
+                title = node.metadata.get('title')
+                path = node.metadata.get('file_path', 'N/A')
 
-            if unique_id not in seen_paths:
-                source_list.append(Source(
-                    repo=repo,
-                    file=display,
-                    url=url if url else None,
-                    score=float(node.score or 0)
-                ))
-                seen_paths.add(unique_id)
+                # Calculate the sigmoid score
+                raw_score = float(node.score or 0)
+                sigmoid_score = 1 / (1 + math.exp(-raw_score))
+                
+                # Clean up the path for display (removes data_versions/x.xx/ prefix)
+                clean_path = re.sub(r'.*data_[^/]+/', '', path)
 
-        final_text = str(response.response)
-        if warning_msg:
-            final_text = f"{warning_msg}\n\n{final_text}"
+                # Determine unique ID to prevent duplicate sources
+                unique_id = url if node.metadata.get('type') == 'github_issue' else path
 
-        return ChatResponse(response=final_text, sources=source_list)
+                # Determine what to show in the UI
+                display = f"Issue: {title}" if node.metadata.get('type') == 'github_issue' else clean_path
+
+                if unique_id not in seen_paths:
+                    source_list.append({
+                        "repo": repo,
+                        "file": display,
+                        "url": url,
+                        "score": sigmoid_score
+                    })
+                    seen_paths.add(unique_id)
+            
+            # D. Send Sources as a special footer packet
+            # We use a delimiter "__SOURCES__:" to let frontend know this isn't text
+            yield f"\n\n__SOURCES__:{json.dumps(source_list)}"
+
+        return StreamingResponse(event_generator(), media_type="text/plain")
         
     except Exception as e:
         logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/reset")
-async def reset_chat(request: ChatRequest): 
-    if request.session_id in session_store:
-        del session_store[request.session_id]
+async def reset_chat(session_id: str = Form(...)): 
+    if session_id in session_store:
+        del session_store[session_id]
         return {"status": "memory_cleared"}
     return {"status": "no_session_found"}
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.png")
+
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "mode": "hybrid" if bm25_retriever else "vector_only", "active_sessions": len(session_store)}
+    return {"status": "ok", "mode": "hybrid_rerank", "active_sessions": len(session_store)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

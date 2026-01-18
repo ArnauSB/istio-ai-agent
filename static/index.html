@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Istio AI Agent</title>
+    <link rel="icon" type="image/png" href="static/favicon.png">
     
     <link rel="stylesheet" href="/static/github-dark.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
@@ -172,6 +173,28 @@
             color: #adbac7;
         }
 
+        /* TYPING INDICATOR */
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            column-gap: 6px;
+            padding: 5px 0;
+        }
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #8b949e;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
         /* --- INPUT AREA & FILE PREVIEW --- */
         .input-area-container {
             padding: 20px;
@@ -315,18 +338,13 @@
                 const hasValidExt = ALLOWED_EXTENSIONS.some(ext => fileName.endsWith(ext));
                 if (!hasValidExt) {
                     alert(`Unsupported file type. Please upload: ${ALLOWED_EXTENSIONS.join(', ')}`);
-                    input.value = '';
-                    return;
+                    input.value = ''; return;
                 }
-
-                // Check Size
                 const fileSizeMB = file.size / (1024 * 1024);
                 if (fileSizeMB > MAX_FILE_SIZE_MB) {
                     alert(`File too large (${fileSizeMB.toFixed(2)}MB). Max 5MB.`);
-                    input.value = '';
-                    return;
+                    input.value = ''; return;
                 }
-
                 fileNameSpan.textContent = "📄 Attached: " + file.name;
                 filePreview.style.display = 'flex';
             }
@@ -341,6 +359,7 @@
             const text = userInput.value.trim();
             if (!text && !fileInput.files[0]) return;
 
+            // UI Setup
             let displayMsg = text;
             if (fileInput.files[0]) displayMsg = `[Attached: ${fileInput.files[0].name}]\n\n` + text;
             appendMessage(displayMsg, 'user-message');
@@ -355,39 +374,92 @@
             clearFile();
             setLoadingState(true);
 
+            // Instead of empty "", we inject the loader HTML
+            const loadingHTML = `
+                <div class="typing-indicator">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                </div>`;
+            
+            const botMessageDiv = appendMessage(loadingHTML, 'bot-message', true);
+
             try {
                 const response = await fetch('/api/chat', { method: 'POST', body: formData });
-                const data = await response.json();
-                const botContent = marked.parse(String(data.response));
-                appendMessage(botContent, 'bot-message', true, data.sources);
+                
+                // 1. Check for Server Errors
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Server Error ${response.status}: ${errorText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = ""; // Buffer to handle split packets
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    buffer += chunk;
+                    
+                    // 2. Robust Split Logic
+                    // We split by the delimiter to separate Markdown from JSON
+                    const parts = buffer.split("__SOURCES__:");
+                    const markdownText = parts[0];
+                    
+                    botMessageDiv.innerHTML = marked.parse(markdownText);
+                    
+                    // If we found the delimiter, try to parse the JSON footer
+                    if (parts.length > 1) {
+                        const jsonStr = parts[1].trim();
+                        // Only try parsing if it looks complete
+                        if (jsonStr.endsWith(']')) {
+                            try {
+                                const sources = JSON.parse(jsonStr);
+                                renderSources(botMessageDiv, sources);
+                            } catch (e) { console.warn("Waiting for full JSON..."); }
+                        }
+                    }
+                    
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+
             } catch (error) {
-                appendMessage("Error reaching server.", 'bot-message');
+                console.error(error);
+                botMessageDiv.innerHTML += `<br><span style="color:#f85149; font-size:0.9em;">[Error: ${error.message}]</span>`;
             } finally {
                 setLoadingState(false);
                 userInput.focus();
             }
         }
 
-        function appendMessage(content, className, isHtml = false, sources = []) {
+        function renderSources(div, sources) {
+            // Prevent double rendering
+            if (div.querySelector('.sources-container')) return;
+            if (!sources || sources.length === 0) return;
+            
+            let html = '<div class="sources-container"><span class="sources-title">📚 Sources Used</span><div class="source-list">';
+            sources.forEach(src => {
+                const matchPercent = Math.round(src.score * 100);
+                html += `
+                    <a href="${src.url || '#'}" target="_blank" class="source-item">
+                        <span class="source-repo">${src.repo}</span>
+                        <span class="source-path" title="${src.file}">${src.file}</span>
+                        <span style="margin-left: auto; font-size: 0.7rem; color: #8b949e;">${matchPercent}%</span>
+                    </a>`;
+            });
+            div.innerHTML += html + '</div></div>';
+        }
+
+        function appendMessage(content, className, isHtml = false) {
             const div = document.createElement('div');
             div.className = `message ${className}`;
             if (isHtml) div.innerHTML = content; else div.textContent = content;
-
-            if (sources && sources.length > 0) {
-                let html = '<div class="sources-container"><span class="sources-title">📚 Sources Used</span><div class="source-list">';
-                sources.forEach(src => {
-                    const matchPercent = Math.round(src.score * 100);
-                    html += `
-                        <a href="${src.url || '#'}" target="_blank" class="source-item">
-                            <span class="source-repo">${src.repo}</span>
-                            <span class="source-path" title="${src.file}">${src.file}</span>
-                            <span style="margin-left: auto; font-size: 0.7rem; color: #8b949e;">${matchPercent}%</span>
-                        </a>`;
-                });
-                div.innerHTML += html + '</div></div>';
-            }
             chatBox.appendChild(div);
             chatBox.scrollTop = chatBox.scrollHeight;
+            return div; 
         }
 
         function setLoadingState(isLoading) {
@@ -398,8 +470,16 @@
 
         async function resetChat() {
             if(!confirm("Reset context?")) return;
-            await fetch('/api/reset', { method: 'POST', body: new FormData() }); // Fixed to match endpoint if needed
-            chatBox.innerHTML = '<div class="message bot-message">Context cleared!</div>';
+            
+            const fd = new FormData();
+            fd.append("session_id", sessionId);
+            
+            try {
+                await fetch('/api/reset', { method: 'POST', body: fd });
+                chatBox.innerHTML = '<div class="message bot-message">Context cleared!</div>';
+            } catch(e) {
+                alert("Failed to reset context");
+            }
         }
     </script>
 </body>
