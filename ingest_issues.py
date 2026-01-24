@@ -29,10 +29,10 @@ def fetch_github_issues(token, repo_name, days_back=365, limit=1000):
     g = Github(auth=auth)
     
     since_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    print(f"Searching for issues created after: {since_date}")
+    print(f"Searching for issues created after: {since_date} with >5 comments")
     
-    # Search OPEN and CLOSED issues
-    query = f"repo:{repo_name} is:issue created:>{since_date}"
+    # This ensures we only fetch "deep" discussions useful for troubleshooting
+    query = f"repo:{repo_name} is:issue created:>{since_date} comments:>5"
     
     issues_data = []
     
@@ -125,6 +125,7 @@ def run_ingestion():
 
     cache_file = "data_versions/istio_issues_cache.json" 
     
+    # Note: If you change the query, you MUST delete the old cache file manually or it will load old data!
     if os.path.exists(cache_file):
         print(f"Loading from local cache ({cache_file})...")
         with open(cache_file, 'r') as f:
@@ -166,17 +167,40 @@ def run_ingestion():
     db = chromadb.PersistentClient(path=config.CHROMA_PATH)
     chroma_collection = db.get_or_create_collection(config.COLLECTION_NAME)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    # Load the existing nodes from 'ingest_code.py' so we don't overwrite them.
+    if os.path.exists(config.STORAGE_NODES_PATH):
+        print(f"Loading existing docstore from {config.STORAGE_NODES_PATH} to append issues...")
+        try:
+            storage_context = StorageContext.from_defaults(
+                persist_dir=config.STORAGE_NODES_PATH, 
+                vector_store=vector_store
+            )
+        except Exception as e:
+            print(f"Error loading existing docstore: {e}. Starting with fresh context.")
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    else:
+        print("No existing docstore found. Creating new context.")
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
     # Embeddings
     Settings.embed_model = config.get_embedding_model()
 
     print(f"Generating vectors for {len(documents)} deep issues...")
+    
+    # --- HYBRID SEARCH PERSISTENCE ---
     VectorStoreIndex.from_documents(
         documents, 
         storage_context=storage_context,
         show_progress=True
     )
+    
+    print(f"Persisting nodes for BM25 at {config.STORAGE_NODES_PATH}...")
+    if not os.path.exists(config.STORAGE_NODES_PATH):
+        os.makedirs(config.STORAGE_NODES_PATH)
+        
+    storage_context.persist(persist_dir=config.STORAGE_NODES_PATH)
+
     print("\nDeep Issues ingestion completed successfully!")
 
 if __name__ == "__main__":

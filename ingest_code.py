@@ -37,7 +37,9 @@ def reset_database():
     """
     Deletes the existing database and node storage to prevent duplication.
     """
-    folders_to_clean = [config.CHROMA_PATH, config.STORAGE_NODES_PATH, DEBUG_OUTPUT_DIR]
+    folders_to_clean = [config.CHROMA_PATH, config.STORAGE_NODES_PATH]
+    if DEBUG_ENABLED:
+        folders_to_clean.append(DEBUG_OUTPUT_DIR)
 
     print("\nCleaning up old databases and debug files...")
     for folder in folders_to_clean:
@@ -114,6 +116,11 @@ def ingest_code():
             url = repo_conf['url']
             repo_subdir = repo_conf.get('subdir', '')
             
+            # --- CONFIG FLAGS ---
+            ingest_protos = repo_conf.get('include_protos', False)
+            ingest_rst = repo_conf.get('include_rst', False)
+            strict_mode = repo_conf.get('strict_mode', False)
+            
             # --- BRANCH RESOLUTION LOGIC ---
             git_branch = repo_conf.get('version_maps', {}).get(system_ver)
             if not git_branch:
@@ -144,8 +151,8 @@ def ingest_code():
 
             # --- COLLECT FILES ---
             files_for_standard_loader = []
-            envoy_rst_docs = []
-            envoy_proto_docs = []
+            files_rst = []
+            files_proto = []
 
             for root, dirs, files in os.walk(scan_path):
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
@@ -154,20 +161,23 @@ def ingest_code():
                     if is_excluded(full_path): continue
                     
                     ext = os.path.splitext(file)[1]
+                    normalized_path = full_path.replace(os.sep, "/")
 
-                    # --- SPECIAL LOGIC: ENVOY DOCS ---
-                    if repo_name == "envoy-docs":
-                        if ext == ".rst":
-                            envoy_rst_docs.append(full_path)
-                        elif ext == ".proto":
-                            # Exclude /v2/ paths
-                            normalized_path = full_path.replace(os.sep, "/")
-                            if "/v2/" in normalized_path:
-                                continue 
-                            
-                            envoy_proto_docs.append(full_path)
-                        
-                        # Continue explicitly skips any other extension (like .md) for Envoy
+                    # --- CHECK RST ---
+                    if ext == ".rst" and ingest_rst:
+                        files_rst.append(full_path)
+                        continue
+
+                    # --- CHECK PROTO ---
+                    if ext == ".proto" and ingest_protos:
+                        # Exclude /v2/ paths
+                        if "/v2/" not in normalized_path:
+                            files_proto.append(full_path)
+                        continue 
+
+                    # --- STRICT MODE CHECK ---
+                    # If this repo is set to 'strict_mode', we ignore everything else (like standard .md/.yaml files).
+                    if strict_mode:
                         continue
 
                     # --- STANDARD LOGIC ---
@@ -190,10 +200,10 @@ def ingest_code():
                 
                 all_documents.extend(docs)
 
-            # 2. Process Envoy RST -> MD
-            if envoy_rst_docs:
-                print(f"[{repo_name}] Converting {len(envoy_rst_docs)} RST files to Markdown...")
-                for rst_path in envoy_rst_docs:
+            # 2. Process RST -> MD
+            if files_rst:
+                print(f"[{repo_name}] Converting {len(files_rst)} RST files to Markdown...")
+                for rst_path in files_rst:
                     md_content = convert_rst_to_md_pypandoc(rst_path)
                     if not md_content:
                         continue
@@ -218,10 +228,10 @@ def ingest_code():
                     )
                     all_documents.append(doc)
 
-            # 3. Process Envoy PROTO -> MD
-            if envoy_proto_docs:
-                print(f"[{repo_name}] Converting {len(envoy_proto_docs)} PROTO files to Markdown...")
-                for proto_path in envoy_proto_docs:
+            # 3. Process PROTO -> MD
+            if files_proto:
+                print(f"[{repo_name}] Converting {len(files_proto)} PROTO files to Markdown...")
+                for proto_path in files_proto:
                     try:
                         with open(proto_path, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read()

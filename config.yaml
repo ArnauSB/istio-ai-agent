@@ -27,6 +27,9 @@ github:
         "1.26": "release-1.26"
     - name: "envoy-docs"
       url: "https://github.com/envoyproxy/envoy.git"
+      include_protos: true    # Enable proto ingestion for this repo
+      include_rst: true       # Enable RST ingestion for this repo
+      strict_mode: true       # Ignore all other files (like standard .md/.yaml)
       version_maps:
         "1.28": "release/v1.36" 
         "1.27": "release/v1.35"
@@ -39,8 +42,6 @@ github:
     - ".md"
     - ".go"
     - ".yaml"
-    - ".rst"
-    - ".proto"
 
   exclude_patterns:
     # Not important
