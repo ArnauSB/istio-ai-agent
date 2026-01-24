@@ -2,7 +2,7 @@ import os
 import shutil
 import yaml
 import fnmatch
-import re
+import pypandoc
 from git import Repo
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext, Settings, Document
 from llama_index.core.node_parser import SentenceSplitter 
@@ -12,6 +12,10 @@ import nest_asyncio
 import config 
 
 nest_asyncio.apply()
+
+# --- CONFIGURATION ---
+DEBUG_ENABLED = config.DEBUG_ENABLED
+DEBUG_OUTPUT_DIR = config.DEBUG_OUTPUT_DIR
 
 def load_exclusions():
     try:
@@ -33,8 +37,9 @@ def reset_database():
     """
     Deletes the existing database and node storage to prevent duplication.
     """
-    folders_to_clean = [config.CHROMA_PATH, config.STORAGE_NODES_PATH]
-    print("\n🧹 Cleaning up old databases...")
+    folders_to_clean = [config.CHROMA_PATH, config.STORAGE_NODES_PATH, DEBUG_OUTPUT_DIR]
+
+    print("\nCleaning up old databases and debug files...")
     for folder in folders_to_clean:
         if os.path.exists(folder):
             try:
@@ -42,49 +47,42 @@ def reset_database():
                 print(f"   - Deleted: {folder}")
             except Exception as e:
                 print(f"   - Error deleting {folder}: {e}")
-    print("✨ Database is clean.\n")
+    print("Database is clean.\n")
 
-def convert_rst_to_md(rst_content):
+def save_debug_file(content, relative_path):
     """
-    Simple converter from RST to Markdown to make it friendlier for the LLM.
+    Saves the converted Markdown content to disk so the user can inspect it.
+    Only runs if debug.enabled is True in config.
     """
-    lines = rst_content.split('\n')
-    md_lines = []
-    in_code_block = False
+    if not DEBUG_ENABLED:
+        return
+
+    # Construct full path: debug_converted/1.28/envoy-docs/path/to/file.md
+    full_path = os.path.join(DEBUG_OUTPUT_DIR, relative_path)
     
-    for i, line in enumerate(lines):
-        # 1. Handle Headings (Underlines like ==== or ----)
-        if i + 1 < len(lines):
-            next_line = lines[i+1].strip()
-            if len(next_line) >= len(line.strip()) and len(next_line) > 0:
-                if set(next_line) <= {'=', '-'}:
-                    # It's a header
-                    level = "# " if '=' in next_line else "## "
-                    md_lines.append(f"\n{level}{line}\n")
-                    lines[i+1] = "" # Skip next line
-                    continue
-        
-        # Skip empty lines that were part of headers
-        if line.strip() == "" and i > 0 and set(lines[i-1].strip()) <= {'=', '-'}:
-            continue
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(content)
 
-        # 2. Handle Code Blocks
-        if ".. code-block::" in line:
-            lang = line.split("::")[-1].strip()
-            md_lines.append(f"\n```{lang}")
-            in_code_block = True
-            continue
-
-        # 3. Clean directives
-        if line.strip().startswith(".. ") and not in_code_block:
-            continue # Skip other directives like toctree
-            
-        # 4. Links `Text <URL>`_ -> [Text](URL)
-        line = re.sub(r'`([^`]+) <([^>]+)>`_', r'[\1](\2)', line)
-
-        md_lines.append(line)
-
-    return "\n".join(md_lines)
+def convert_rst_to_md_pypandoc(file_path):
+    """
+    Robust converter using Pypandoc (wraps Pandoc binary).
+    Uses --quiet to suppress 'Reference not found' warnings.
+    """
+    try:
+        # Pypandoc handles the file reading and conversion
+        output = pypandoc.convert_file(
+            file_path, 
+            'md', 
+            format='rst', 
+            extra_args=['--quiet']
+        )
+        return output
+    except Exception as e:
+        print(f"Pandoc error on {file_path}: {e}")
+        return ""
 
 def convert_proto_to_md(proto_content, filename):
     """
@@ -104,6 +102,8 @@ def ingest_code():
     all_documents = []
 
     print(f"Starting Multi-Version Ingestion: {system_versions}")
+    if DEBUG_ENABLED:
+        print(f"Debug mode enabled. Saving converted files to '{DEBUG_OUTPUT_DIR}/'")
 
     # ITERATE "USER FACING" VERSIONS
     for system_ver in system_versions:
@@ -160,6 +160,7 @@ def ingest_code():
                         if ext == ".rst":
                             envoy_rst_docs.append(full_path)
                         elif ext == ".proto":
+                            # Exclude /v2/ paths
                             normalized_path = full_path.replace(os.sep, "/")
                             if "/v2/" in normalized_path:
                                 continue 
@@ -169,7 +170,7 @@ def ingest_code():
                         # Continue explicitly skips any other extension (like .md) for Envoy
                         continue
 
-                    # --- STANDARD LOGIC (Istio, etc.) ---
+                    # --- STANDARD LOGIC ---
                     if ext not in allowed_extensions: continue
                     files_for_standard_loader.append(full_path)
 
@@ -193,28 +194,29 @@ def ingest_code():
             if envoy_rst_docs:
                 print(f"[{repo_name}] Converting {len(envoy_rst_docs)} RST files to Markdown...")
                 for rst_path in envoy_rst_docs:
-                    try:
-                        with open(rst_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
+                    md_content = convert_rst_to_md_pypandoc(rst_path)
+                    if not md_content:
+                        continue
+
+                    if DEBUG_ENABLED:
+                        rel_path_from_version = os.path.relpath(rst_path, os.path.dirname(base_path))
+                        save_rel_path = rel_path_from_version.replace('.rst', '.md')
+                        save_debug_file(md_content, save_rel_path)
                         
-                        md_content = convert_rst_to_md(content)
-                        
-                        # Create Document Manually
-                        rel_path = os.path.relpath(rst_path, base_path)
-                        doc = Document(
-                            text=md_content,
-                            metadata={
-                                "file_path": f"{repo_name}/{rel_path.replace('.rst', '.md')}",
-                                "file_name": os.path.basename(rst_path),
-                                "repo_name": repo_name,
-                                "system_version": system_ver,
-                                "git_branch": git_branch,
-                                "original_format": "rst"
-                            }
-                        )
-                        all_documents.append(doc)
-                    except Exception as e:
-                        print(f"Failed to convert {rst_path}: {e}")
+                    # Create Document Manually
+                    rel_path = os.path.relpath(rst_path, base_path)
+                    doc = Document(
+                        text=md_content,
+                        metadata={
+                            "file_path": f"{repo_name}/{rel_path.replace('.rst', '.md')}",
+                            "file_name": os.path.basename(rst_path),
+                            "repo_name": repo_name,
+                            "system_version": system_ver,
+                            "git_branch": git_branch,
+                            "original_format": "rst"
+                        }
+                    )
+                    all_documents.append(doc)
 
             # 3. Process Envoy PROTO -> MD
             if envoy_proto_docs:
@@ -225,6 +227,11 @@ def ingest_code():
                             content = f.read()
                         
                         md_content = convert_proto_to_md(content, os.path.basename(proto_path))
+
+                        if DEBUG_ENABLED:
+                            rel_path_from_version = os.path.relpath(proto_path, os.path.dirname(base_path))
+                            save_rel_path = rel_path_from_version + ".md" 
+                            save_debug_file(md_content, save_rel_path)
                         
                         rel_path = os.path.relpath(proto_path, base_path)
                         doc = Document(
@@ -277,7 +284,7 @@ def ingest_code():
     # Save to disk
     storage_context.persist(persist_dir=config.STORAGE_NODES_PATH)
 
-    print("Ingestion Complete!")
+    print(f"Ingestion Complete!")
 
 if __name__ == "__main__":
     ingest_code()

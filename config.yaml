@@ -6,6 +6,10 @@ system:
 app:
   cache_file: "data_versions/istio_issues_cache.json"
 
+debug:
+  enabled: false
+  output_dir: "./debug_converted"
+
 github:
   repositories:
     - name: "istio-core"
@@ -44,12 +48,6 @@ github:
     - "**/*_test.go"
     - "**/testdata/**"
     - "**/.git/**"
-    # Envoy exclusion
-    - "**/*.cc"
-    - "**/*.h"
-    - "**/source/**"
-    - "**/bazel/**"
-    - "**/test/**"
     # Zirain advanced stuff
     - "**/*.wasm"
     - "**/*.so"

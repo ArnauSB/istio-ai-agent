@@ -5,6 +5,7 @@ venv/
 data_*/
 chroma_db/
 storage_nodes/
+debug_converted/
 istio_issues_cache.json
 *.json
 *.log
