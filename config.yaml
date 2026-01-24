@@ -6,6 +6,10 @@ system:
 app:
   cache_file: "data_versions/istio_issues_cache.json"
 
+debug:
+  enabled: false
+  output_dir: "./debug_converted"
+
 github:
   repositories:
     - name: "istio-core"
@@ -16,12 +20,16 @@ github:
         "1.26": "release-1.26"
     - name: "istio-docs"
       url: "https://github.com/istio/istio.io.git"
+      subdir: "content/en/docs"
       version_maps:
         "1.28": "release-1.28"
         "1.27": "release-1.27"
         "1.26": "release-1.26"
     - name: "envoy-docs"
       url: "https://github.com/envoyproxy/envoy.git"
+      include_protos: true    # Enable proto ingestion for this repo
+      include_rst: true       # Enable RST ingestion for this repo
+      strict_mode: true       # Ignore all other files (like standard .md/.yaml)
       version_maps:
         "1.28": "release/v1.36" 
         "1.27": "release/v1.35"
@@ -34,7 +42,6 @@ github:
     - ".md"
     - ".go"
     - ".yaml"
-    - ".rst"
 
   exclude_patterns:
     # Not important
@@ -42,16 +49,6 @@ github:
     - "**/*_test.go"
     - "**/testdata/**"
     - "**/.git/**"
-    # Envoy exclusion
-    - "**/*.cc"
-    - "**/*.h"
-    - "**/source/**"
-    - "**/bazel/**"
-    - "**/test/**"
-    # Istio docs exclusion
-    - "**/blog/**"
-    - "**/news/**"
-    - "**/archives/**"
     # Zirain advanced stuff
     - "**/*.wasm"
     - "**/*.so"

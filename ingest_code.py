@@ -2,8 +2,9 @@ import os
 import shutil
 import yaml
 import fnmatch
+import pypandoc
 from git import Repo
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext, Settings
+from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext, Settings, Document
 from llama_index.core.node_parser import SentenceSplitter 
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
@@ -11,6 +12,10 @@ import nest_asyncio
 import config 
 
 nest_asyncio.apply()
+
+# --- CONFIGURATION ---
+DEBUG_ENABLED = config.DEBUG_ENABLED
+DEBUG_OUTPUT_DIR = config.DEBUG_OUTPUT_DIR
 
 def load_exclusions():
     try:
@@ -33,8 +38,10 @@ def reset_database():
     Deletes the existing database and node storage to prevent duplication.
     """
     folders_to_clean = [config.CHROMA_PATH, config.STORAGE_NODES_PATH]
-    
-    print("\n🧹 Cleaning up old databases...")
+    if DEBUG_ENABLED:
+        folders_to_clean.append(DEBUG_OUTPUT_DIR)
+
+    print("\nCleaning up old databases and debug files...")
     for folder in folders_to_clean:
         if os.path.exists(folder):
             try:
@@ -42,7 +49,48 @@ def reset_database():
                 print(f"   - Deleted: {folder}")
             except Exception as e:
                 print(f"   - Error deleting {folder}: {e}")
-    print("✨ Database is clean.\n")
+    print("Database is clean.\n")
+
+def save_debug_file(content, relative_path):
+    """
+    Saves the converted Markdown content to disk so the user can inspect it.
+    Only runs if debug.enabled is True in config.
+    """
+    if not DEBUG_ENABLED:
+        return
+
+    # Construct full path: debug_converted/1.28/envoy-docs/path/to/file.md
+    full_path = os.path.join(DEBUG_OUTPUT_DIR, relative_path)
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+def convert_rst_to_md_pypandoc(file_path):
+    """
+    Robust converter using Pypandoc (wraps Pandoc binary).
+    Uses --quiet to suppress 'Reference not found' warnings.
+    """
+    try:
+        # Pypandoc handles the file reading and conversion
+        output = pypandoc.convert_file(
+            file_path, 
+            'md', 
+            format='rst', 
+            extra_args=['--quiet']
+        )
+        return output
+    except Exception as e:
+        print(f"Pandoc error on {file_path}: {e}")
+        return ""
+
+def convert_proto_to_md(proto_content, filename):
+    """
+    Wraps Protobuf definitions in a Markdown code block.
+    """
+    return f"# {filename}\n\n```protobuf\n{proto_content}\n```"
 
 def ingest_code():
     # CLEAN UP
@@ -56,6 +104,8 @@ def ingest_code():
     all_documents = []
 
     print(f"Starting Multi-Version Ingestion: {system_versions}")
+    if DEBUG_ENABLED:
+        print(f"Debug mode enabled. Saving converted files to '{DEBUG_OUTPUT_DIR}/'")
 
     # ITERATE "USER FACING" VERSIONS
     for system_ver in system_versions:
@@ -64,56 +114,152 @@ def ingest_code():
         for repo_conf in repo_list:
             repo_name = repo_conf['name']
             url = repo_conf['url']
+            repo_subdir = repo_conf.get('subdir', '')
+            
+            # --- CONFIG FLAGS ---
+            ingest_protos = repo_conf.get('include_protos', False)
+            ingest_rst = repo_conf.get('include_rst', False)
+            strict_mode = repo_conf.get('strict_mode', False)
             
             # --- BRANCH RESOLUTION LOGIC ---
             git_branch = repo_conf.get('version_maps', {}).get(system_ver)
             if not git_branch:
-                git_branch = repo_conf.get('branch') # Fallback for global
+                git_branch = repo_conf.get('branch')
                 
             if not git_branch:
                 print(f"Skipping {repo_name}: No mapping found for {system_ver}")
                 continue
 
-            version_path = os.path.join("data_versions", system_ver, repo_name)
+            base_path = os.path.join("data_versions", system_ver, repo_name)
             
-            # --- CLONE / PULL ---
-            if os.path.exists(version_path):
-                print(f"Using existing folder: {version_path}")
-            else:
-                print(f"Cloning {repo_name} ({git_branch}) into {version_path}...")
+            # --- CLONE ---
+            if not os.path.exists(base_path):
+                print(f"Cloning {repo_name} ({git_branch}) into {base_path}...")
                 try:
-                    Repo.clone_from(url, version_path, depth=1, branch=git_branch)
+                    Repo.clone_from(url, base_path, depth=1, branch=git_branch)
                 except Exception as e:
                     print(f"Error cloning {repo_name}: {e}")
                     continue
+            else:
+                print(f"Using existing folder: {base_path}")
 
-            # --- FILTER FILES ---
-            file_paths = []
-            for root, dirs, files in os.walk(version_path):
+            # --- DETERMINE SCAN PATH ---
+            scan_path = os.path.join(base_path, repo_subdir) if repo_subdir else base_path
+            if not os.path.exists(scan_path):
+                print(f"Warning: Subdirectory {scan_path} not found. Skipping.")
+                continue
+
+            # --- COLLECT FILES ---
+            files_for_standard_loader = []
+            files_rst = []
+            files_proto = []
+
+            for root, dirs, files in os.walk(scan_path):
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
                 for file in files:
                     full_path = os.path.join(root, file)
-                    if not any(file.endswith(ext) for ext in allowed_extensions): continue
                     if is_excluded(full_path): continue
-                    file_paths.append(full_path)
+                    
+                    ext = os.path.splitext(file)[1]
+                    normalized_path = full_path.replace(os.sep, "/")
 
-            if not file_paths: continue
+                    # --- CHECK RST ---
+                    if ext == ".rst" and ingest_rst:
+                        files_rst.append(full_path)
+                        continue
 
-            # --- LOAD & TAG ---
-            print(f"Ingesting {len(file_paths)} files from {repo_name}...")
-            reader = SimpleDirectoryReader(input_files=file_paths)
-            docs = reader.load_data()
-            
-            for d in docs:
-                d.metadata["repo_name"] = repo_name
-                d.metadata["system_version"] = system_ver 
-                d.metadata["git_branch"] = git_branch
-                clean_rel_path = os.path.relpath(d.metadata.get("file_path"), version_path)
-                d.metadata["file_path"] = f"{repo_name}/{clean_rel_path}" 
+                    # --- CHECK PROTO ---
+                    if ext == ".proto" and ingest_protos:
+                        # Exclude /v2/ paths
+                        if "/v2/" not in normalized_path:
+                            files_proto.append(full_path)
+                        continue 
 
-            all_documents.extend(docs)
+                    # --- STRICT MODE CHECK ---
+                    # If this repo is set to 'strict_mode', we ignore everything else (like standard .md/.yaml files).
+                    if strict_mode:
+                        continue
 
-    # INDEXING WITH MANUAL NODE SAVING
+                    # --- STANDARD LOGIC ---
+                    if ext not in allowed_extensions: continue
+                    files_for_standard_loader.append(full_path)
+
+            # 1. Process Standard Files
+            if files_for_standard_loader:
+                print(f"[{repo_name}] Loading {len(files_for_standard_loader)} standard files...")
+                reader = SimpleDirectoryReader(input_files=files_for_standard_loader)
+                docs = reader.load_data()
+                
+                for d in docs:
+                    d.metadata["repo_name"] = repo_name
+                    d.metadata["system_version"] = system_ver
+                    d.metadata["git_branch"] = git_branch
+                    # Calc relative path from the repo root (not the subdir) to keep links valid
+                    clean_rel_path = os.path.relpath(d.metadata.get("file_path"), base_path)
+                    d.metadata["file_path"] = f"{repo_name}/{clean_rel_path}"
+                
+                all_documents.extend(docs)
+
+            # 2. Process RST -> MD
+            if files_rst:
+                print(f"[{repo_name}] Converting {len(files_rst)} RST files to Markdown...")
+                for rst_path in files_rst:
+                    md_content = convert_rst_to_md_pypandoc(rst_path)
+                    if not md_content:
+                        continue
+
+                    if DEBUG_ENABLED:
+                        rel_path_from_version = os.path.relpath(rst_path, os.path.dirname(base_path))
+                        save_rel_path = rel_path_from_version.replace('.rst', '.md')
+                        save_debug_file(md_content, save_rel_path)
+                        
+                    # Create Document Manually
+                    rel_path = os.path.relpath(rst_path, base_path)
+                    doc = Document(
+                        text=md_content,
+                        metadata={
+                            "file_path": f"{repo_name}/{rel_path.replace('.rst', '.md')}",
+                            "file_name": os.path.basename(rst_path),
+                            "repo_name": repo_name,
+                            "system_version": system_ver,
+                            "git_branch": git_branch,
+                            "original_format": "rst"
+                        }
+                    )
+                    all_documents.append(doc)
+
+            # 3. Process PROTO -> MD
+            if files_proto:
+                print(f"[{repo_name}] Converting {len(files_proto)} PROTO files to Markdown...")
+                for proto_path in files_proto:
+                    try:
+                        with open(proto_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        md_content = convert_proto_to_md(content, os.path.basename(proto_path))
+
+                        if DEBUG_ENABLED:
+                            rel_path_from_version = os.path.relpath(proto_path, os.path.dirname(base_path))
+                            save_rel_path = rel_path_from_version + ".md" 
+                            save_debug_file(md_content, save_rel_path)
+                        
+                        rel_path = os.path.relpath(proto_path, base_path)
+                        doc = Document(
+                            text=md_content,
+                            metadata={
+                                "file_path": f"{repo_name}/{rel_path}.md", # Fake extension for UI clarity
+                                "file_name": os.path.basename(proto_path),
+                                "repo_name": repo_name,
+                                "system_version": system_ver,
+                                "git_branch": git_branch,
+                                "original_format": "proto"
+                            }
+                        )
+                        all_documents.append(doc)
+                    except Exception as e:
+                        print(f"Failed to convert {proto_path}: {e}")
+
+    # --- INDEXING ---
     print(f"\nTOTAL: Loaded {len(all_documents)} docs across all versions.")
     
     print(f"Connecting to ChromaDB at {config.CHROMA_PATH}...")
@@ -135,9 +281,9 @@ def ingest_code():
     
     # Manually add them to the docstore (This forces saving to JSON later)
     storage_context.docstore.add_documents(nodes)
-    print(f"-> Created {len(nodes)} nodes in memory.")
+    print(f"-> Created {len(nodes)} nodes.")
 
-    print("Generating Embeddings (ChromaDB)...")
+    print("Generating Embeddings...")
     # Create Index from NODES (not documents)
     VectorStoreIndex(nodes, storage_context=storage_context, show_progress=True)
     
@@ -148,7 +294,7 @@ def ingest_code():
     # Save to disk
     storage_context.persist(persist_dir=config.STORAGE_NODES_PATH)
 
-    print("Multi-version Ingestion Complete!")
+    print(f"Ingestion Complete!")
 
 if __name__ == "__main__":
     ingest_code()

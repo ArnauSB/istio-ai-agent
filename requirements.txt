@@ -20,6 +20,9 @@ nest_asyncio
 PyGithub
 GitPython
 
+# --- Text Processing ---
+pypandoc
+
 # --- UI & API ---
 fastapi
 uvicorn
