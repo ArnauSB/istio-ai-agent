@@ -2,8 +2,9 @@ import os
 import shutil
 import yaml
 import fnmatch
+import re
 from git import Repo
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext, Settings
+from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext, Settings, Document
 from llama_index.core.node_parser import SentenceSplitter 
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
@@ -33,7 +34,6 @@ def reset_database():
     Deletes the existing database and node storage to prevent duplication.
     """
     folders_to_clean = [config.CHROMA_PATH, config.STORAGE_NODES_PATH]
-    
     print("\n🧹 Cleaning up old databases...")
     for folder in folders_to_clean:
         if os.path.exists(folder):
@@ -43,6 +43,54 @@ def reset_database():
             except Exception as e:
                 print(f"   - Error deleting {folder}: {e}")
     print("✨ Database is clean.\n")
+
+def convert_rst_to_md(rst_content):
+    """
+    Simple converter from RST to Markdown to make it friendlier for the LLM.
+    """
+    lines = rst_content.split('\n')
+    md_lines = []
+    in_code_block = False
+    
+    for i, line in enumerate(lines):
+        # 1. Handle Headings (Underlines like ==== or ----)
+        if i + 1 < len(lines):
+            next_line = lines[i+1].strip()
+            if len(next_line) >= len(line.strip()) and len(next_line) > 0:
+                if set(next_line) <= {'=', '-'}:
+                    # It's a header
+                    level = "# " if '=' in next_line else "## "
+                    md_lines.append(f"\n{level}{line}\n")
+                    lines[i+1] = "" # Skip next line
+                    continue
+        
+        # Skip empty lines that were part of headers
+        if line.strip() == "" and i > 0 and set(lines[i-1].strip()) <= {'=', '-'}:
+            continue
+
+        # 2. Handle Code Blocks
+        if ".. code-block::" in line:
+            lang = line.split("::")[-1].strip()
+            md_lines.append(f"\n```{lang}")
+            in_code_block = True
+            continue
+
+        # 3. Clean directives
+        if line.strip().startswith(".. ") and not in_code_block:
+            continue # Skip other directives like toctree
+            
+        # 4. Links `Text <URL>`_ -> [Text](URL)
+        line = re.sub(r'`([^`]+) <([^>]+)>`_', r'[\1](\2)', line)
+
+        md_lines.append(line)
+
+    return "\n".join(md_lines)
+
+def convert_proto_to_md(proto_content, filename):
+    """
+    Wraps Protobuf definitions in a Markdown code block.
+    """
+    return f"# {filename}\n\n```protobuf\n{proto_content}\n```"
 
 def ingest_code():
     # CLEAN UP
@@ -64,56 +112,137 @@ def ingest_code():
         for repo_conf in repo_list:
             repo_name = repo_conf['name']
             url = repo_conf['url']
+            repo_subdir = repo_conf.get('subdir', '')
             
             # --- BRANCH RESOLUTION LOGIC ---
             git_branch = repo_conf.get('version_maps', {}).get(system_ver)
             if not git_branch:
-                git_branch = repo_conf.get('branch') # Fallback for global
+                git_branch = repo_conf.get('branch')
                 
             if not git_branch:
                 print(f"Skipping {repo_name}: No mapping found for {system_ver}")
                 continue
 
-            version_path = os.path.join("data_versions", system_ver, repo_name)
+            base_path = os.path.join("data_versions", system_ver, repo_name)
             
-            # --- CLONE / PULL ---
-            if os.path.exists(version_path):
-                print(f"Using existing folder: {version_path}")
-            else:
-                print(f"Cloning {repo_name} ({git_branch}) into {version_path}...")
+            # --- CLONE ---
+            if not os.path.exists(base_path):
+                print(f"Cloning {repo_name} ({git_branch}) into {base_path}...")
                 try:
-                    Repo.clone_from(url, version_path, depth=1, branch=git_branch)
+                    Repo.clone_from(url, base_path, depth=1, branch=git_branch)
                 except Exception as e:
                     print(f"Error cloning {repo_name}: {e}")
                     continue
+            else:
+                print(f"Using existing folder: {base_path}")
 
-            # --- FILTER FILES ---
-            file_paths = []
-            for root, dirs, files in os.walk(version_path):
+            # --- DETERMINE SCAN PATH ---
+            scan_path = os.path.join(base_path, repo_subdir) if repo_subdir else base_path
+            if not os.path.exists(scan_path):
+                print(f"Warning: Subdirectory {scan_path} not found. Skipping.")
+                continue
+
+            # --- COLLECT FILES ---
+            files_for_standard_loader = []
+            envoy_rst_docs = []
+            envoy_proto_docs = []
+
+            for root, dirs, files in os.walk(scan_path):
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
                 for file in files:
                     full_path = os.path.join(root, file)
-                    if not any(file.endswith(ext) for ext in allowed_extensions): continue
                     if is_excluded(full_path): continue
-                    file_paths.append(full_path)
+                    
+                    ext = os.path.splitext(file)[1]
 
-            if not file_paths: continue
+                    # --- SPECIAL LOGIC: ENVOY DOCS ---
+                    if repo_name == "envoy-docs":
+                        if ext == ".rst":
+                            envoy_rst_docs.append(full_path)
+                        elif ext == ".proto":
+                            normalized_path = full_path.replace(os.sep, "/")
+                            if "/v2/" in normalized_path:
+                                continue 
+                            
+                            envoy_proto_docs.append(full_path)
+                        
+                        # Continue explicitly skips any other extension (like .md) for Envoy
+                        continue
 
-            # --- LOAD & TAG ---
-            print(f"Ingesting {len(file_paths)} files from {repo_name}...")
-            reader = SimpleDirectoryReader(input_files=file_paths)
-            docs = reader.load_data()
-            
-            for d in docs:
-                d.metadata["repo_name"] = repo_name
-                d.metadata["system_version"] = system_ver 
-                d.metadata["git_branch"] = git_branch
-                clean_rel_path = os.path.relpath(d.metadata.get("file_path"), version_path)
-                d.metadata["file_path"] = f"{repo_name}/{clean_rel_path}" 
+                    # --- STANDARD LOGIC (Istio, etc.) ---
+                    if ext not in allowed_extensions: continue
+                    files_for_standard_loader.append(full_path)
 
-            all_documents.extend(docs)
+            # 1. Process Standard Files
+            if files_for_standard_loader:
+                print(f"[{repo_name}] Loading {len(files_for_standard_loader)} standard files...")
+                reader = SimpleDirectoryReader(input_files=files_for_standard_loader)
+                docs = reader.load_data()
+                
+                for d in docs:
+                    d.metadata["repo_name"] = repo_name
+                    d.metadata["system_version"] = system_ver
+                    d.metadata["git_branch"] = git_branch
+                    # Calc relative path from the repo root (not the subdir) to keep links valid
+                    clean_rel_path = os.path.relpath(d.metadata.get("file_path"), base_path)
+                    d.metadata["file_path"] = f"{repo_name}/{clean_rel_path}"
+                
+                all_documents.extend(docs)
 
-    # INDEXING WITH MANUAL NODE SAVING
+            # 2. Process Envoy RST -> MD
+            if envoy_rst_docs:
+                print(f"[{repo_name}] Converting {len(envoy_rst_docs)} RST files to Markdown...")
+                for rst_path in envoy_rst_docs:
+                    try:
+                        with open(rst_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        md_content = convert_rst_to_md(content)
+                        
+                        # Create Document Manually
+                        rel_path = os.path.relpath(rst_path, base_path)
+                        doc = Document(
+                            text=md_content,
+                            metadata={
+                                "file_path": f"{repo_name}/{rel_path.replace('.rst', '.md')}",
+                                "file_name": os.path.basename(rst_path),
+                                "repo_name": repo_name,
+                                "system_version": system_ver,
+                                "git_branch": git_branch,
+                                "original_format": "rst"
+                            }
+                        )
+                        all_documents.append(doc)
+                    except Exception as e:
+                        print(f"Failed to convert {rst_path}: {e}")
+
+            # 3. Process Envoy PROTO -> MD
+            if envoy_proto_docs:
+                print(f"[{repo_name}] Converting {len(envoy_proto_docs)} PROTO files to Markdown...")
+                for proto_path in envoy_proto_docs:
+                    try:
+                        with open(proto_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        md_content = convert_proto_to_md(content, os.path.basename(proto_path))
+                        
+                        rel_path = os.path.relpath(proto_path, base_path)
+                        doc = Document(
+                            text=md_content,
+                            metadata={
+                                "file_path": f"{repo_name}/{rel_path}.md", # Fake extension for UI clarity
+                                "file_name": os.path.basename(proto_path),
+                                "repo_name": repo_name,
+                                "system_version": system_ver,
+                                "git_branch": git_branch,
+                                "original_format": "proto"
+                            }
+                        )
+                        all_documents.append(doc)
+                    except Exception as e:
+                        print(f"Failed to convert {proto_path}: {e}")
+
+    # --- INDEXING ---
     print(f"\nTOTAL: Loaded {len(all_documents)} docs across all versions.")
     
     print(f"Connecting to ChromaDB at {config.CHROMA_PATH}...")
@@ -135,9 +264,9 @@ def ingest_code():
     
     # Manually add them to the docstore (This forces saving to JSON later)
     storage_context.docstore.add_documents(nodes)
-    print(f"-> Created {len(nodes)} nodes in memory.")
+    print(f"-> Created {len(nodes)} nodes.")
 
-    print("Generating Embeddings (ChromaDB)...")
+    print("Generating Embeddings...")
     # Create Index from NODES (not documents)
     VectorStoreIndex(nodes, storage_context=storage_context, show_progress=True)
     
@@ -148,7 +277,7 @@ def ingest_code():
     # Save to disk
     storage_context.persist(persist_dir=config.STORAGE_NODES_PATH)
 
-    print("Multi-version Ingestion Complete!")
+    print("Ingestion Complete!")
 
 if __name__ == "__main__":
     ingest_code()
