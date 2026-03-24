@@ -41,4 +41,4 @@ CHUNK_OVERLAP = cfg["splitter"]["chunk_overlap"]
 def get_embedding_model():
     model_name = cfg["models"]["embedding_model"]
     print(f"Loading embeddings: {model_name}")
-    return HuggingFaceEmbedding(model_name=model_name)
+    return HuggingFaceEmbedding(model_name=model_name, trust_remote_code=True)

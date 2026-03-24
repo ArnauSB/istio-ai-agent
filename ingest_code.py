@@ -115,6 +115,7 @@ def ingest_code():
             repo_name = repo_conf['name']
             url = repo_conf['url']
             repo_subdir = repo_conf.get('subdir', '')
+            repo_category = repo_conf.get('category', 'unknown')
             
             # --- CONFIG FLAGS ---
             ingest_protos = repo_conf.get('include_protos', False)
@@ -194,6 +195,7 @@ def ingest_code():
                     d.metadata["repo_name"] = repo_name
                     d.metadata["system_version"] = system_ver
                     d.metadata["git_branch"] = git_branch
+                    d.metadata["category"] = repo_category
                     # Calc relative path from the repo root (not the subdir) to keep links valid
                     clean_rel_path = os.path.relpath(d.metadata.get("file_path"), base_path)
                     d.metadata["file_path"] = f"{repo_name}/{clean_rel_path}"
@@ -223,6 +225,7 @@ def ingest_code():
                             "repo_name": repo_name,
                             "system_version": system_ver,
                             "git_branch": git_branch,
+                            "category": repo_category,
                             "original_format": "rst"
                         }
                     )
@@ -252,6 +255,7 @@ def ingest_code():
                                 "repo_name": repo_name,
                                 "system_version": system_ver,
                                 "git_branch": git_branch,
+                                "category": repo_category,
                                 "original_format": "proto"
                             }
                         )
@@ -273,7 +277,10 @@ def ingest_code():
     Settings.embed_model = config.get_embedding_model()
     
     print("Parsing nodes manually to ensure they are saved to disk...")
-    parser = SentenceSplitter(chunk_size=1024, chunk_overlap=20)
+    parser = SentenceSplitter(
+        chunk_size=config.CHUNK_SIZE, 
+        chunk_overlap=config.CHUNK_OVERLAP
+    )
     Settings.text_splitter = parser
     
     # Manually create nodes
