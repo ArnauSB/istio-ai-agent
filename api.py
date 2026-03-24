@@ -43,10 +43,10 @@ bm25_retriever = None
 session_store: Dict[str, ChatMemoryBuffer] = {}
 
 # --- RERANKER ---
-# This decides which document is best, whether it came from Vector or BM25
+# This decides which document is best, whether it came from Vector or BM25.
 reranker = SentenceTransformerRerank(
-    model="cross-encoder/ms-marco-MiniLM-L-6-v2", 
-    top_n=10
+    model="BAAI/bge-reranker-v2-m3", 
+    top_n=5
 )
 
 class ChatRequest(BaseModel):
@@ -142,7 +142,7 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
 
     # 1. Setup Vector Retriever
     vector_retriever = vector_index.as_retriever(
-        similarity_top_k=20,
+        similarity_top_k=10,
         filters=filters
     )
 
@@ -151,7 +151,7 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
         # QueryFusionRetriever combines results from both retrievers
         final_retriever = QueryFusionRetriever(
             retrievers=[vector_retriever, bm25_retriever],
-            similarity_top_k=30, # Total candidates to send to Reranker
+            similarity_top_k=15, # Total candidates to send to Reranker
             num_queries=1,       # Only use the original query (no query generation)
             mode="simple"        # Simple merge, let Reranker sort it out
         )
@@ -170,18 +170,24 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
 def detect_version_intent(user_message: str):
     active_versions = config.cfg['system']['active_versions']
     default_ver = config.cfg['system']['default_version']
+    
+    # Sort versions to find the oldest supported one dynamically
     try:
         sorted_vers = sorted(active_versions, key=lambda x: int(x.split('.')[1]), reverse=True)
         oldest_supported = sorted_vers[-1]
     except:
         oldest_supported = active_versions[-1]
 
+    # Look for patterns like "1.28" or "1.26" in the prompt
     match = re.search(r'\b1\.(\d+)\b', user_message)
     if match:
         asked_minor = int(match.group(1))
+        # Protect against asking for ancient versions (e.g., 1.15)
         if asked_minor < int(oldest_supported.split('.')[1]):
              return oldest_supported, f"Note: Asked 1.{asked_minor}, answering with {oldest_supported}."
+        
         req = f"1.{asked_minor}"
+        # Return matched version if valid, otherwise fallback to default
         return (req, None) if req in active_versions else (default_ver, f"Note: Using default {default_ver}.")
     return default_ver, None
 
