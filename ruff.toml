@@ -1,0 +1,15 @@
+# Ruff configuration — https://docs.astral.sh/ruff/
+target-version = "py312"
+
+# Keep only the app and its tests in scope; everything else is ingested data.
+extend-exclude = ["data_versions", "storage_nodes", "chroma_db", "static", "venv"]
+
+[lint]
+# Defaults (E4/E7/E9 + pyflakes F) plus:
+#   B  — flake8-bugbear (likely bugs: mutable defaults, useless expressions)
+#   UP — pyupgrade (keeps syntax modern for py312)
+extend-select = ["B", "UP"]
+
+# B008 (no function calls in argument defaults) fights FastAPI's dependency
+# idiom (`file: UploadFile = File(None)`), which is intentional there.
+ignore = ["B008"]

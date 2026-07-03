@@ -1,12 +1,14 @@
 import os
 import sys
+import time
 import logging
 import re
 import uvicorn
 import math
 import json
+import threading
 
-from typing import List, Optional, Dict
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -24,8 +26,8 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter, Fi
 from llama_index.core.chat_engine import ContextChatEngine
 
 # --- RETRIEVAL & RERANKING IMPORTS ---
-from llama_index.retrievers.bm25 import BM25Retriever 
-from llama_index.core.retrievers import QueryFusionRetriever
+from llama_index.retrievers.bm25 import BM25Retriever
+from llama_index.core.retrievers import QueryFusionRetriever, BaseRetriever
 from llama_index.core.postprocessor import SentenceTransformerRerank
 
 import config
@@ -37,10 +39,63 @@ nest_asyncio.apply()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- SESSION STORE CONFIG ---
+# Idle sessions expire after this many seconds; total is capped to bound memory.
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "1000"))
+
+
+class SessionStore:
+    """Bounded, TTL-based store for per-session chat memory.
+
+    Prevents unbounded memory growth: idle sessions expire after
+    ``ttl`` seconds and the total count is capped at ``max_sessions``
+    (least-recently-used evicted first). A lock guards access since the
+    ASGI app may serve requests concurrently.
+    """
+
+    def __init__(self, ttl: int, max_sessions: int):
+        self._ttl = ttl
+        self._max = max_sessions
+        # session_id -> (last_seen_monotonic, ChatMemoryBuffer)
+        self._data: OrderedDict[str, tuple] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _purge_expired(self, now: float):
+        expired = [sid for sid, (ts, _) in self._data.items() if now - ts > self._ttl]
+        for sid in expired:
+            del self._data[sid]
+            logger.info(f"Expired idle session: {sid}")
+
+    def get_or_create(self, session_id: str) -> ChatMemoryBuffer:
+        now = time.monotonic()
+        with self._lock:
+            self._purge_expired(now)
+            if session_id in self._data:
+                _, memory = self._data.pop(session_id)  # pop+reinsert = mark as MRU
+            else:
+                logger.info(f"Creating new memory for session: {session_id}")
+                memory = ChatMemoryBuffer.from_defaults(token_limit=8000)
+            self._data[session_id] = (now, memory)
+            # Enforce the size cap (OrderedDict keeps LRU at the front)
+            while len(self._data) > self._max:
+                evicted, _ = self._data.popitem(last=False)
+                logger.info(f"Evicting least-recently-used session: {evicted}")
+            return memory
+
+    def remove(self, session_id: str) -> bool:
+        with self._lock:
+            return self._data.pop(session_id, None) is not None
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+
 # --- GLOBAL STATE ---
-vector_index = None 
+vector_index = None
 bm25_retriever = None
-session_store: Dict[str, ChatMemoryBuffer] = {}
+session_store = SessionStore(SESSION_TTL_SECONDS, MAX_SESSIONS)
 
 # --- RERANKER ---
 # This decides which document is best, whether it came from Vector or BM25.
@@ -56,12 +111,12 @@ class ChatRequest(BaseModel):
 class Source(BaseModel):
     repo: str
     file: str
-    url: Optional[str] = None
+    url: str | None = None
     score: float
 
 class ChatResponse(BaseModel):
     response: str
-    sources: List[Source] = []
+    sources: list[Source] = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,8 +148,10 @@ async def lifespan(app: FastAPI):
             
             if len(all_nodes) > 0:
                 bm25_retriever = BM25Retriever.from_defaults(
-                    nodes=all_nodes, 
-                    similarity_top_k=10 # Fetch 10 via Keywords
+                    nodes=all_nodes,
+                    # Fetch extra via keywords: results are version-filtered
+                    # post-retrieval, so over-fetch to keep a healthy candidate pool.
+                    similarity_top_k=25
                 )
             else:
                 logger.warning("Docstore loaded but returned 0 nodes. Check ingest_code.py.")
@@ -128,17 +185,41 @@ async def read_root():
         return FileResponse('static/index.html')
     return {"message": "Istio Agent API Running"}
 
+class VersionFilteredRetriever(BaseRetriever):
+    """Wraps a retriever and keeps only nodes matching the requested version.
+
+    BM25 has no native metadata filtering, so without this it would surface
+    docs from every ingested Istio version regardless of the query's target.
+    We keep nodes whose ``system_version`` matches ``target_version`` or is
+    ``"any"`` (version-agnostic docs such as GitHub issues).
+    """
+
+    def __init__(self, inner: BaseRetriever, target_version: str):
+        self._inner = inner
+        self._target = target_version
+        super().__init__()
+
+    def _keep(self, nodes):
+        return [
+            n for n in nodes
+            if n.node.metadata.get("system_version") in (self._target, "any")
+        ]
+
+    def _retrieve(self, query_bundle):
+        return self._keep(self._inner.retrieve(query_bundle))
+
+    async def _aretrieve(self, query_bundle):
+        return self._keep(await self._inner.aretrieve(query_bundle))
+
+
 # --- CHAT ENGINE FACTORY (Hybrid + Reranker) ---
 def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
     if not vector_index:
         raise HTTPException(status_code=503, detail="System not ready")
 
-    if session_id not in session_store:
-        logger.info(f"Creating new memory for session: {session_id}")
-        session_store[session_id] = ChatMemoryBuffer.from_defaults(token_limit=8000)
-    
-    # We grab the memory object that holds the history for this user
-    user_memory = session_store[session_id]
+    # Grab (or lazily create) the memory object that holds this user's history.
+    # The store expires idle sessions and caps the total to bound memory use.
+    user_memory = session_store.get_or_create(session_id)
 
     # 1. Setup Vector Retriever
     vector_retriever = vector_index.as_retriever(
@@ -148,9 +229,12 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
 
     # 2. Setup Hybrid Retriever (Fusion)
     if bm25_retriever:
+        # BM25 can't filter on metadata, so wrap it to drop other-version docs
+        # before fusion — otherwise keyword hits leak across Istio versions.
+        version_bm25 = VersionFilteredRetriever(bm25_retriever, target_version)
         # QueryFusionRetriever combines results from both retrievers
         final_retriever = QueryFusionRetriever(
-            retrievers=[vector_retriever, bm25_retriever],
+            retrievers=[vector_retriever, version_bm25],
             similarity_top_k=15, # Total candidates to send to Reranker
             num_queries=1,       # Only use the original query (no query generation)
             mode="simple"        # Simple merge, let Reranker sort it out
@@ -175,20 +259,37 @@ def detect_version_intent(user_message: str):
     try:
         sorted_vers = sorted(active_versions, key=lambda x: int(x.split('.')[1]), reverse=True)
         oldest_supported = sorted_vers[-1]
-    except:
+    except (ValueError, IndexError):
         oldest_supported = active_versions[-1]
 
-    # Look for patterns like "1.28" or "1.26" in the prompt
-    match = re.search(r'\b1\.(\d+)\b', user_message)
-    if match:
-        asked_minor = int(match.group(1))
+    # Find a candidate minor version. We accept two kinds of mentions:
+    #   1. Anchored: a "1.x" sitting near a version keyword (istio/version/release/
+    #      upgrade/migrate). High confidence, so we honor any minor and reconcile it
+    #      below (out-of-range -> oldest, unknown -> default with a note).
+    #   2. Bare: a plain "1.x" anywhere. Low confidence, since pasted configs and
+    #      semver strings are full of stray "1.x". We only trust it when it exactly
+    #      matches a supported version; otherwise we ignore it and use the default.
+    anchored = re.search(
+        r'(?i)\b(?:istio|versions?|release|upgrade|migrat\w*)\b[^\d]{0,20}\bv?1\.(\d+)\b',
+        user_message,
+    )
+    bare = re.search(r'\bv?1\.(\d+)\b', user_message)
+
+    if anchored:
+        asked_minor = int(anchored.group(1))
         # Protect against asking for ancient versions (e.g., 1.15)
         if asked_minor < int(oldest_supported.split('.')[1]):
-             return oldest_supported, f"Note: Asked 1.{asked_minor}, answering with {oldest_supported}."
-        
+            return oldest_supported, f"Note: Asked 1.{asked_minor}, answering with {oldest_supported}."
+
         req = f"1.{asked_minor}"
         # Return matched version if valid, otherwise fallback to default
         return (req, None) if req in active_versions else (default_ver, f"Note: Using default {default_ver}.")
+
+    if bare:
+        req = f"1.{int(bare.group(1))}"
+        if req in active_versions:
+            return req, None
+
     return default_ver, None
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
@@ -198,7 +299,7 @@ ALLOWED_EXTENSIONS = {'.yaml', '.yml', '.go', '.md', '.txt', '.json'}
 async def chat_endpoint(
     message: str = Form(...),
     session_id: str = Form(...),
-    file: Optional[UploadFile] = File(None)
+    file: UploadFile | None = File(None)
 ):
     # 1. Validation Logic
     if file:
@@ -263,7 +364,8 @@ async def chat_endpoint(
             
             # response_stream.source_nodes contains the retrieved nodes
             for node in response_stream.source_nodes:
-                if len(source_list) >= 5: break
+                if len(source_list) >= 5:
+                    break
                 
                 repo = node.metadata.get('repo_name', 'istio')
                 url = node.metadata.get('source', '')
@@ -300,12 +402,11 @@ async def chat_endpoint(
         
     except Exception as e:
         logger.error(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise HTTPException(status_code=500, detail="Internal Server Error") from e
 
 @app.post("/api/reset")
-async def reset_chat(session_id: str = Form(...)): 
-    if session_id in session_store:
-        del session_store[session_id]
+async def reset_chat(session_id: str = Form(...)):
+    if session_store.remove(session_id):
         return {"status": "memory_cleared"}
     return {"status": "no_session_found"}
 
