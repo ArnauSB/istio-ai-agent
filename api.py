@@ -27,8 +27,8 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter, Fi
 from llama_index.core.chat_engine import ContextChatEngine
 
 # --- RETRIEVAL & RERANKING IMPORTS ---
-from llama_index.retrievers.bm25 import BM25Retriever 
-from llama_index.core.retrievers import QueryFusionRetriever
+from llama_index.retrievers.bm25 import BM25Retriever
+from llama_index.core.retrievers import QueryFusionRetriever, BaseRetriever
 from llama_index.core.postprocessor import SentenceTransformerRerank
 
 import config
@@ -149,8 +149,10 @@ async def lifespan(app: FastAPI):
             
             if len(all_nodes) > 0:
                 bm25_retriever = BM25Retriever.from_defaults(
-                    nodes=all_nodes, 
-                    similarity_top_k=10 # Fetch 10 via Keywords
+                    nodes=all_nodes,
+                    # Fetch extra via keywords: results are version-filtered
+                    # post-retrieval, so over-fetch to keep a healthy candidate pool.
+                    similarity_top_k=25
                 )
             else:
                 logger.warning("Docstore loaded but returned 0 nodes. Check ingest_code.py.")
@@ -184,6 +186,33 @@ async def read_root():
         return FileResponse('static/index.html')
     return {"message": "Istio Agent API Running"}
 
+class VersionFilteredRetriever(BaseRetriever):
+    """Wraps a retriever and keeps only nodes matching the requested version.
+
+    BM25 has no native metadata filtering, so without this it would surface
+    docs from every ingested Istio version regardless of the query's target.
+    We keep nodes whose ``system_version`` matches ``target_version`` or is
+    ``"any"`` (version-agnostic docs such as GitHub issues).
+    """
+
+    def __init__(self, inner: BaseRetriever, target_version: str):
+        self._inner = inner
+        self._target = target_version
+        super().__init__()
+
+    def _keep(self, nodes):
+        return [
+            n for n in nodes
+            if n.node.metadata.get("system_version") in (self._target, "any")
+        ]
+
+    def _retrieve(self, query_bundle):
+        return self._keep(self._inner.retrieve(query_bundle))
+
+    async def _aretrieve(self, query_bundle):
+        return self._keep(await self._inner.aretrieve(query_bundle))
+
+
 # --- CHAT ENGINE FACTORY (Hybrid + Reranker) ---
 def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
     if not vector_index:
@@ -201,9 +230,12 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
 
     # 2. Setup Hybrid Retriever (Fusion)
     if bm25_retriever:
+        # BM25 can't filter on metadata, so wrap it to drop other-version docs
+        # before fusion — otherwise keyword hits leak across Istio versions.
+        version_bm25 = VersionFilteredRetriever(bm25_retriever, target_version)
         # QueryFusionRetriever combines results from both retrievers
         final_retriever = QueryFusionRetriever(
-            retrievers=[vector_retriever, bm25_retriever],
+            retrievers=[vector_retriever, version_bm25],
             similarity_top_k=15, # Total candidates to send to Reranker
             num_queries=1,       # Only use the original query (no query generation)
             mode="simple"        # Simple merge, let Reranker sort it out
