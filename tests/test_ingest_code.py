@@ -26,7 +26,7 @@ class TestLoadExclusions(unittest.TestCase):
             self.assertEqual(ingest_code.load_exclusions(), [])
 
     def test_unreadable_file_returns_empty_list(self):
-        with mock.patch("builtins.open", side_effect=IOError("denied")):
+        with mock.patch("builtins.open", side_effect=OSError("denied")):
             self.assertEqual(ingest_code.load_exclusions(), [])
 
 

@@ -2,14 +2,13 @@ import os
 import yaml
 from dotenv import load_dotenv
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core import Settings
 
 # Load env
 load_dotenv()
 
 # Load YAML
 def load_config(path="config.yaml"):
-    with open(path, "r") as f:
+    with open(path) as f:
         return yaml.safe_load(f)
 
 cfg = load_config()

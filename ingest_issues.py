@@ -128,7 +128,7 @@ def run_ingestion():
     # Note: If you change the query, you MUST delete the old cache file manually or it will load old data!
     if os.path.exists(cache_file):
         print(f"Loading from local cache ({cache_file})...")
-        with open(cache_file, 'r') as f:
+        with open(cache_file) as f:
             raw_data = json.load(f)
         print(f"-> {len(raw_data)} issues retrieved from disk.")
     else:

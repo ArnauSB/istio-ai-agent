@@ -3,7 +3,7 @@
 #   make test PYTHON=./venv/bin/python
 PYTHON ?= python3
 
-.PHONY: help venv install test run ingest ingest-code ingest-issues clean
+.PHONY: help venv install install-dev test lint lint-fix run ingest ingest-code ingest-issues clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -15,8 +15,17 @@ venv: ## Create a local virtualenv in ./venv
 install: ## Install pinned dependencies
 	$(PYTHON) -m pip install -r requirements.txt
 
+install-dev: install ## Install pinned dependencies plus dev tools (ruff)
+	$(PYTHON) -m pip install -r requirements-dev.txt
+
 test: ## Run the unit test suite
 	$(PYTHON) -m unittest discover -s tests -v -b
+
+lint: ## Lint the codebase with ruff
+	$(PYTHON) -m ruff check .
+
+lint-fix: ## Lint and auto-fix what ruff can fix
+	$(PYTHON) -m ruff check . --fix
 
 run: ## Start the API server (http://localhost:8000)
 	$(PYTHON) api.py

@@ -19,9 +19,9 @@ DEBUG_OUTPUT_DIR = config.DEBUG_OUTPUT_DIR
 
 def load_exclusions():
     try:
-        with open("config.yaml", "r") as f:
+        with open("config.yaml") as f:
             return yaml.safe_load(f).get("github", {}).get("exclude_patterns", [])
-    except:
+    except Exception:
         return []
 
 EXCLUDE_PATTERNS = load_exclusions()
@@ -29,8 +29,10 @@ EXCLUDE_PATTERNS = load_exclusions()
 def is_excluded(file_path):
     normalized_path = os.path.normpath(file_path)
     for pattern in EXCLUDE_PATTERNS:
-        if fnmatch.fnmatch(normalized_path, pattern): return True
-        if fnmatch.fnmatch(os.path.basename(normalized_path), pattern): return True
+        if fnmatch.fnmatch(normalized_path, pattern):
+            return True
+        if fnmatch.fnmatch(os.path.basename(normalized_path), pattern):
+            return True
     return False
 
 def reset_database():
@@ -159,8 +161,9 @@ def ingest_code():
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
                 for file in files:
                     full_path = os.path.join(root, file)
-                    if is_excluded(full_path): continue
-                    
+                    if is_excluded(full_path):
+                        continue
+
                     ext = os.path.splitext(file)[1]
                     normalized_path = full_path.replace(os.sep, "/")
 
@@ -182,7 +185,8 @@ def ingest_code():
                         continue
 
                     # --- STANDARD LOGIC ---
-                    if ext not in allowed_extensions: continue
+                    if ext not in allowed_extensions:
+                        continue
                     files_for_standard_loader.append(full_path)
 
             # 1. Process Standard Files
@@ -236,7 +240,7 @@ def ingest_code():
                 print(f"[{repo_name}] Converting {len(files_proto)} PROTO files to Markdown...")
                 for proto_path in files_proto:
                     try:
-                        with open(proto_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        with open(proto_path, encoding='utf-8', errors='ignore') as f:
                             content = f.read()
                         
                         md_content = convert_proto_to_md(content, os.path.basename(proto_path))
@@ -301,7 +305,7 @@ def ingest_code():
     # Save to disk
     storage_context.persist(persist_dir=config.STORAGE_NODES_PATH)
 
-    print(f"Ingestion Complete!")
+    print("Ingestion Complete!")
 
 if __name__ == "__main__":
     ingest_code()

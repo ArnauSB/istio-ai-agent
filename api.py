@@ -9,7 +9,6 @@ import json
 import threading
 
 from collections import OrderedDict
-from typing import List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -59,7 +58,7 @@ class SessionStore:
         self._ttl = ttl
         self._max = max_sessions
         # session_id -> (last_seen_monotonic, ChatMemoryBuffer)
-        self._data: "OrderedDict[str, tuple]" = OrderedDict()
+        self._data: OrderedDict[str, tuple] = OrderedDict()
         self._lock = threading.Lock()
 
     def _purge_expired(self, now: float):
@@ -112,12 +111,12 @@ class ChatRequest(BaseModel):
 class Source(BaseModel):
     repo: str
     file: str
-    url: Optional[str] = None
+    url: str | None = None
     score: float
 
 class ChatResponse(BaseModel):
     response: str
-    sources: List[Source] = []
+    sources: list[Source] = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -300,7 +299,7 @@ ALLOWED_EXTENSIONS = {'.yaml', '.yml', '.go', '.md', '.txt', '.json'}
 async def chat_endpoint(
     message: str = Form(...),
     session_id: str = Form(...),
-    file: Optional[UploadFile] = File(None)
+    file: UploadFile | None = File(None)
 ):
     # 1. Validation Logic
     if file:
@@ -365,7 +364,8 @@ async def chat_endpoint(
             
             # response_stream.source_nodes contains the retrieved nodes
             for node in response_stream.source_nodes:
-                if len(source_list) >= 5: break
+                if len(source_list) >= 5:
+                    break
                 
                 repo = node.metadata.get('repo_name', 'istio')
                 url = node.metadata.get('source', '')
@@ -402,7 +402,7 @@ async def chat_endpoint(
         
     except Exception as e:
         logger.error(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise HTTPException(status_code=500, detail="Internal Server Error") from e
 
 @app.post("/api/reset")
 async def reset_chat(session_id: str = Form(...)):
