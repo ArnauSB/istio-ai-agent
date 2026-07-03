@@ -1,12 +1,15 @@
 import os
 import sys
+import time
 import logging
 import re
 import uvicorn
 import math
 import json
+import threading
 
-from typing import List, Optional, Dict
+from collections import OrderedDict
+from typing import List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -37,10 +40,63 @@ nest_asyncio.apply()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- SESSION STORE CONFIG ---
+# Idle sessions expire after this many seconds; total is capped to bound memory.
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "1000"))
+
+
+class SessionStore:
+    """Bounded, TTL-based store for per-session chat memory.
+
+    Prevents unbounded memory growth: idle sessions expire after
+    ``ttl`` seconds and the total count is capped at ``max_sessions``
+    (least-recently-used evicted first). A lock guards access since the
+    ASGI app may serve requests concurrently.
+    """
+
+    def __init__(self, ttl: int, max_sessions: int):
+        self._ttl = ttl
+        self._max = max_sessions
+        # session_id -> (last_seen_monotonic, ChatMemoryBuffer)
+        self._data: "OrderedDict[str, tuple]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _purge_expired(self, now: float):
+        expired = [sid for sid, (ts, _) in self._data.items() if now - ts > self._ttl]
+        for sid in expired:
+            del self._data[sid]
+            logger.info(f"Expired idle session: {sid}")
+
+    def get_or_create(self, session_id: str) -> ChatMemoryBuffer:
+        now = time.monotonic()
+        with self._lock:
+            self._purge_expired(now)
+            if session_id in self._data:
+                _, memory = self._data.pop(session_id)  # pop+reinsert = mark as MRU
+            else:
+                logger.info(f"Creating new memory for session: {session_id}")
+                memory = ChatMemoryBuffer.from_defaults(token_limit=8000)
+            self._data[session_id] = (now, memory)
+            # Enforce the size cap (OrderedDict keeps LRU at the front)
+            while len(self._data) > self._max:
+                evicted, _ = self._data.popitem(last=False)
+                logger.info(f"Evicting least-recently-used session: {evicted}")
+            return memory
+
+    def remove(self, session_id: str) -> bool:
+        with self._lock:
+            return self._data.pop(session_id, None) is not None
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+
 # --- GLOBAL STATE ---
-vector_index = None 
+vector_index = None
 bm25_retriever = None
-session_store: Dict[str, ChatMemoryBuffer] = {}
+session_store = SessionStore(SESSION_TTL_SECONDS, MAX_SESSIONS)
 
 # --- RERANKER ---
 # This decides which document is best, whether it came from Vector or BM25.
@@ -133,12 +189,9 @@ def get_chat_engine(session_id: str, filters=None, target_version="1.28"):
     if not vector_index:
         raise HTTPException(status_code=503, detail="System not ready")
 
-    if session_id not in session_store:
-        logger.info(f"Creating new memory for session: {session_id}")
-        session_store[session_id] = ChatMemoryBuffer.from_defaults(token_limit=8000)
-    
-    # We grab the memory object that holds the history for this user
-    user_memory = session_store[session_id]
+    # Grab (or lazily create) the memory object that holds this user's history.
+    # The store expires idle sessions and caps the total to bound memory use.
+    user_memory = session_store.get_or_create(session_id)
 
     # 1. Setup Vector Retriever
     vector_retriever = vector_index.as_retriever(
@@ -320,9 +373,8 @@ async def chat_endpoint(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/reset")
-async def reset_chat(session_id: str = Form(...)): 
-    if session_id in session_store:
-        del session_store[session_id]
+async def reset_chat(session_id: str = Form(...)):
+    if session_store.remove(session_id):
         return {"status": "memory_cleared"}
     return {"status": "no_session_found"}
 
