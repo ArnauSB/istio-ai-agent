@@ -175,20 +175,37 @@ def detect_version_intent(user_message: str):
     try:
         sorted_vers = sorted(active_versions, key=lambda x: int(x.split('.')[1]), reverse=True)
         oldest_supported = sorted_vers[-1]
-    except:
+    except (ValueError, IndexError):
         oldest_supported = active_versions[-1]
 
-    # Look for patterns like "1.28" or "1.26" in the prompt
-    match = re.search(r'\b1\.(\d+)\b', user_message)
-    if match:
-        asked_minor = int(match.group(1))
+    # Find a candidate minor version. We accept two kinds of mentions:
+    #   1. Anchored: a "1.x" sitting near a version keyword (istio/version/release/
+    #      upgrade/migrate). High confidence, so we honor any minor and reconcile it
+    #      below (out-of-range -> oldest, unknown -> default with a note).
+    #   2. Bare: a plain "1.x" anywhere. Low confidence, since pasted configs and
+    #      semver strings are full of stray "1.x". We only trust it when it exactly
+    #      matches a supported version; otherwise we ignore it and use the default.
+    anchored = re.search(
+        r'(?i)\b(?:istio|versions?|release|upgrade|migrat\w*)\b[^\d]{0,20}\bv?1\.(\d+)\b',
+        user_message,
+    )
+    bare = re.search(r'\bv?1\.(\d+)\b', user_message)
+
+    if anchored:
+        asked_minor = int(anchored.group(1))
         # Protect against asking for ancient versions (e.g., 1.15)
         if asked_minor < int(oldest_supported.split('.')[1]):
-             return oldest_supported, f"Note: Asked 1.{asked_minor}, answering with {oldest_supported}."
-        
+            return oldest_supported, f"Note: Asked 1.{asked_minor}, answering with {oldest_supported}."
+
         req = f"1.{asked_minor}"
         # Return matched version if valid, otherwise fallback to default
         return (req, None) if req in active_versions else (default_ver, f"Note: Using default {default_ver}.")
+
+    if bare:
+        req = f"1.{int(bare.group(1))}"
+        if req in active_versions:
+            return req, None
+
     return default_ver, None
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
