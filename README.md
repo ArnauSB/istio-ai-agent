@@ -1,7 +1,7 @@
 # 🤖 Istio AI Agent (Experimental v0.2)
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.11+-yellow.svg)
+![Python](https://img.shields.io/badge/Python-3.12+-yellow.svg)
 ![Status](https://img.shields.io/badge/Status-Beta-green.svg)
 
 An Advanced AI Assistant specifically designed for **Istio Service Mesh**. 
@@ -41,7 +41,7 @@ The pipeline implements a "Retrieve & Rerank" strategy:
 
 ### Prerequisites
 
-1. **Python 3.11+** installed.
+1. **Python 3.12+** installed.
 2. **[Ollama](https://ollama.com/)** installed and running.
 3. Pull the model:
 ```bash

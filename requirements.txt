@@ -1,4 +1,4 @@
-# Pinned to the versions validated in the working environment (python 3.11).
+# Pinned to the versions validated in the working environment (python 3.12).
 # Regenerate deliberately after testing an upgrade; do not float these silently.
 
 # --- Core Dependencies ---
